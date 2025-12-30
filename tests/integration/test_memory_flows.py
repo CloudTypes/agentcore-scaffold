@@ -18,11 +18,10 @@ def mock_memory_client():
     client = MagicMock(spec=MemoryClient)
     client.memory_id = "test-memory-id"
     client.region = "us-east-1"
-    client.retrieve_memories = MagicMock(return_value=[])
+    client.list_sessions = MagicMock(return_value=[])
+    client.get_session_summary = MagicMock(return_value=None)
     client.get_user_preferences = MagicMock(return_value=[])
     client.store_event = MagicMock()
-    client.get_session_summary = MagicMock(return_value=None)
-    client.list_sessions = MagicMock(return_value=[])
     return client
 
 
@@ -45,8 +44,14 @@ def sample_preferences():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_memory_integration_flow(mock_memory_client):
+@patch('memory.session_manager.get_config')
+async def test_memory_integration_flow(mock_get_config, mock_memory_client):
     """Test end-to-end memory storage and retrieval."""
+    # Mock config
+    mock_config = MagicMock()
+    mock_config.get_config_value = MagicMock(return_value="3")
+    mock_get_config.return_value = mock_config
+    
     # Create session manager
     session_manager = MemorySessionManager(
         memory_client=mock_memory_client,
@@ -54,11 +59,11 @@ async def test_memory_integration_flow(mock_memory_client):
         session_id="test-session-123"
     )
     
-    # Initialize session (should retrieve memories and preferences)
+    # Initialize session (should retrieve past sessions and preferences)
     await session_manager.initialize()
     
     # Verify memory operations were called
-    mock_memory_client.retrieve_memories.assert_called_once()
+    mock_memory_client.list_sessions.assert_called_once()
     mock_memory_client.get_user_preferences.assert_called_once()
     mock_memory_client.store_event.assert_called()
     
@@ -67,7 +72,7 @@ async def test_memory_integration_flow(mock_memory_client):
     
     # Verify event was stored
     calls = mock_memory_client.store_event.call_args_list
-    user_input_calls = [c for c in calls if c[1]["event_type"] == "user_input"]
+    user_input_calls = [c for c in calls if (c.kwargs.get("event_type") or c[1].get("event_type")) == "user_input"]
     assert len(user_input_calls) > 0
     
     # Store agent response
@@ -75,7 +80,7 @@ async def test_memory_integration_flow(mock_memory_client):
     
     # Verify event was stored
     calls = mock_memory_client.store_event.call_args_list
-    agent_response_calls = [c for c in calls if c[1]["event_type"] == "agent_response"]
+    agent_response_calls = [c for c in calls if (c.kwargs.get("event_type") or c[1].get("event_type")) == "agent_response"]
     assert len(agent_response_calls) > 0
     
     # Finalize session
@@ -83,14 +88,20 @@ async def test_memory_integration_flow(mock_memory_client):
     
     # Verify session_end event was stored
     calls = mock_memory_client.store_event.call_args_list
-    session_end_calls = [c for c in calls if c[1]["event_type"] == "session_end"]
+    session_end_calls = [c for c in calls if (c.kwargs.get("event_type") or c[1].get("event_type")) == "session_end"]
     assert len(session_end_calls) > 0
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_cross_session_memory_persistence(mock_memory_client, sample_memory_records):
+@patch('memory.session_manager.get_config')
+async def test_cross_session_memory_persistence(mock_get_config, mock_memory_client, sample_memory_records):
     """Test that memories persist across sessions."""
+    # Mock config
+    mock_config = MagicMock()
+    mock_config.get_config_value = MagicMock(return_value="3")
+    mock_get_config.return_value = mock_config
+    
     # First session: store some events
     session1 = MemorySessionManager(
         memory_client=mock_memory_client,
@@ -102,8 +113,14 @@ async def test_cross_session_memory_persistence(mock_memory_client, sample_memor
     session1.store_user_input(text="I like dark mode")
     await session1.finalize()
     
-    # Second session: verify previous memories are available
-    mock_memory_client.retrieve_memories.return_value = sample_memory_records
+    # Second session: verify previous session summaries are available
+    past_sessions = [
+        {"session_id": "session-1", "summary": "Past conversation about dark mode"}
+    ]
+    mock_memory_client.list_sessions.return_value = past_sessions
+    mock_memory_client.get_session_summary.return_value = {
+        "content": {"text": "Past conversation about dark mode"}
+    }
     mock_memory_client.get_user_preferences.return_value = []
     
     session2 = MemorySessionManager(
@@ -114,20 +131,21 @@ async def test_cross_session_memory_persistence(mock_memory_client, sample_memor
     
     await session2.initialize()
     
-    # Verify memories were retrieved
-    mock_memory_client.retrieve_memories.assert_called()
+    # Verify past sessions were retrieved
+    mock_memory_client.list_sessions.assert_called()
     
-    # Verify context includes past memories
+    # Verify context includes past session summaries
     context = session2.get_context()
     assert context is not None
+    assert "dark mode" in context.lower() or "Past conversation" in context
     
     # Verify session isolation (different session IDs)
     assert session1.session_id != session2.session_id
     
     # Verify both sessions stored events with correct session IDs
     calls = mock_memory_client.store_event.call_args_list
-    session1_calls = [c for c in calls if c[1]["session_id"] == "session-1"]
-    session2_calls = [c for c in calls if c[1]["session_id"] == "session-2"]
+    session1_calls = [c for c in calls if (c.kwargs.get("session_id") or c[1].get("session_id")) == "session-1"]
+    session2_calls = [c for c in calls if (c.kwargs.get("session_id") or c[1].get("session_id")) == "session-2"]
     assert len(session1_calls) > 0
     # session2 should have session_start event
     assert len(session2_calls) > 0
@@ -135,40 +153,65 @@ async def test_cross_session_memory_persistence(mock_memory_client, sample_memor
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_memory_context_injection(mock_memory_client, sample_memory_records, sample_preferences):
+@patch('memory.session_manager.get_config')
+async def test_memory_context_injection(mock_get_config, mock_memory_client, sample_memory_records, sample_preferences):
     """Test that memory context is injected into agent."""
-    # Set up memories and preferences
-    mock_memory_client.retrieve_memories.return_value = sample_memory_records
-    mock_memory_client.get_user_preferences.return_value = sample_preferences
+    # Mock config
+    mock_config = MagicMock()
+    mock_config.get_config_value = MagicMock(return_value="3")
+    mock_get_config.return_value = mock_config
+    
+    # Set up past sessions and preferences
+    past_sessions = [
+        {"session_id": "session-1", "summary": "Past conversation about weather in Denver"}
+    ]
+    mock_memory_client.list_sessions.return_value = past_sessions
+    mock_memory_client.get_session_summary.return_value = {
+        "content": {"text": "Past conversation about weather in Denver"}
+    }
+    mock_memory_client.get_user_preferences.return_value = [
+        {"content": {"text": "User prefers concise responses"}}
+    ]
     
     # Create session manager
     session_manager = MemorySessionManager(
         memory_client=mock_memory_client,
-        actor_id="user@example.com"
+        actor_id="user@example.com",
+        session_id="current-session"
     )
     
-    # Initialize (should build context from memories and preferences)
+    # Initialize (should build context from past session summaries and preferences)
     await session_manager.initialize()
     
     # Get context
     context = session_manager.get_context()
     
-    # Verify context is built
+    # Verify context is built with structured format
     assert context is not None
-    assert "Past conversation" in context or "weather" in context.lower()
+    assert "Here is relevant information from previous conversations" in context
+    assert "weather" in context.lower() or "denver" in context.lower()
+    assert "User Preferences" in context
     assert "prefers" in context.lower() or "concise" in context.lower()
+    assert "[Memory 1]" in context
+    assert "Use this information to provide personalized responses" in context
     
-    # Verify memories and preferences were retrieved
-    mock_memory_client.retrieve_memories.assert_called_once()
+    # Verify past sessions and preferences were retrieved
+    mock_memory_client.list_sessions.assert_called_once()
     mock_memory_client.get_user_preferences.assert_called_once()
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_memory_context_injection_empty(mock_memory_client):
-    """Test context injection with empty memories."""
-    # No memories or preferences
-    mock_memory_client.retrieve_memories.return_value = []
+@patch('memory.session_manager.get_config')
+async def test_memory_context_injection_empty(mock_get_config, mock_memory_client):
+    """Test context injection with empty past sessions and preferences."""
+    # Mock config
+    mock_config = MagicMock()
+    mock_config.get_config_value = MagicMock(return_value="3")
+    mock_get_config.return_value = mock_config
+    
+    # No past sessions or preferences
+    mock_memory_client.list_sessions.return_value = []
     mock_memory_client.get_user_preferences.return_value = []
     
     session_manager = MemorySessionManager(
@@ -178,7 +221,7 @@ async def test_memory_context_injection_empty(mock_memory_client):
     
     await session_manager.initialize()
     
-    # Context should be None when no memories/preferences
+    # Context should be None when no past sessions/preferences
     context = session_manager.get_context()
     assert context is None
 
@@ -246,8 +289,14 @@ async def test_authentication_with_memory(mock_memory_client):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_tool_use_memory_storage(mock_memory_client):
+@patch('memory.session_manager.get_config')
+async def test_tool_use_memory_storage(mock_get_config, mock_memory_client):
     """Test that tool use events are stored in memory."""
+    # Mock config
+    mock_config = MagicMock()
+    mock_config.get_config_value = MagicMock(return_value="3")
+    mock_get_config.return_value = mock_config
+    
     session_manager = MemorySessionManager(
         memory_client=mock_memory_client,
         actor_id="user@example.com",
@@ -265,22 +314,29 @@ async def test_tool_use_memory_storage(mock_memory_client):
     
     # Verify tool use event was stored
     calls = mock_memory_client.store_event.call_args_list
-    tool_use_calls = [c for c in calls if c[1]["event_type"] == "tool_use"]
+    tool_use_calls = [c for c in calls if (c.kwargs.get("event_type") or c[1].get("event_type")) == "tool_use"]
     assert len(tool_use_calls) > 0
     
     # Verify tool use data
     tool_call = tool_use_calls[0]
-    assert tool_call[1]["payload"]["tool_name"] == "calculator"
-    assert tool_call[1]["payload"]["input"] == {"expression": "2+2"}
-    assert tool_call[1]["payload"]["output"] == {"result": 4}
+    payload = tool_call.kwargs.get("payload") or tool_call[1].get("payload")
+    assert payload["tool_name"] == "calculator"
+    assert payload["input"] == {"expression": "2+2"}
+    assert payload["output"] == {"result": 4}
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_memory_error_handling(mock_memory_client):
+@patch('memory.session_manager.get_config')
+async def test_memory_error_handling(mock_get_config, mock_memory_client):
     """Test that memory errors don't break the session."""
+    # Mock config
+    mock_config = MagicMock()
+    mock_config.get_config_value = MagicMock(return_value="3")
+    mock_get_config.return_value = mock_config
+    
     # Make memory operations fail
-    mock_memory_client.retrieve_memories.side_effect = Exception("Memory error")
+    mock_memory_client.list_sessions.side_effect = Exception("Memory error")
     mock_memory_client.store_event.side_effect = Exception("Storage error")
     
     session_manager = MemorySessionManager(

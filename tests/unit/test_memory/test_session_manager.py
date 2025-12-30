@@ -8,10 +8,19 @@ from unittest.mock import Mock, patch, MagicMock, AsyncMock
 def mock_memory_client():
     """Mock memory client."""
     client = MagicMock()
-    client.retrieve_memories = MagicMock(return_value=[])
+    client.list_sessions = MagicMock(return_value=[])
+    client.get_session_summary = MagicMock(return_value=None)
     client.get_user_preferences = MagicMock(return_value=[])
     client.store_event = MagicMock()
     return client
+
+
+@pytest.fixture
+def mock_config():
+    """Mock config system."""
+    config = MagicMock()
+    config.get_config_value = MagicMock(return_value="3")
+    return config
 
 
 def test_session_manager_initialization(mock_memory_client):
@@ -42,9 +51,12 @@ def test_session_manager_initialization_generates_session_id(mock_memory_client)
 
 
 @pytest.mark.asyncio
-async def test_session_manager_initialize(mock_memory_client):
+@patch('memory.session_manager.get_config')
+async def test_session_manager_initialize(mock_get_config, mock_memory_client, mock_config):
     """Test session initialization."""
     from memory.session_manager import MemorySessionManager
+    
+    mock_get_config.return_value = mock_config
     
     manager = MemorySessionManager(
         memory_client=mock_memory_client,
@@ -54,16 +66,21 @@ async def test_session_manager_initialize(mock_memory_client):
     await manager.initialize()
     
     assert manager._initialized is True
+    mock_memory_client.list_sessions.assert_called_once()
     mock_memory_client.store_event.assert_called()
     # Check that session_start event was stored
-    calls = [call[1]["event_type"] for call in mock_memory_client.store_event.call_args_list]
+    # store_event is called with keyword args: actor_id, session_id, event_type, payload
+    calls = [call.kwargs.get("event_type") or call[1].get("event_type") for call in mock_memory_client.store_event.call_args_list]
     assert "session_start" in calls
 
 
 @pytest.mark.asyncio
-async def test_session_manager_initialize_idempotency(mock_memory_client):
+@patch('memory.session_manager.get_config')
+async def test_session_manager_initialize_idempotency(mock_get_config, mock_memory_client, mock_config):
     """Test that initialize is idempotent (can be called multiple times)."""
     from memory.session_manager import MemorySessionManager
+    
+    mock_get_config.return_value = mock_config
     
     manager = MemorySessionManager(
         memory_client=mock_memory_client,
@@ -75,45 +92,64 @@ async def test_session_manager_initialize_idempotency(mock_memory_client):
     
     # Reset call count
     mock_memory_client.store_event.reset_mock()
+    mock_memory_client.list_sessions.reset_mock()
     
     # Call again
     await manager.initialize()
     
-    # Should not call store_event again for session_start
-    calls = [call[1]["event_type"] for call in mock_memory_client.store_event.call_args_list]
+    # Should not call list_sessions or store_event again
+    mock_memory_client.list_sessions.assert_not_called()
+    calls = [call.kwargs.get("event_type") or call[1].get("event_type") for call in mock_memory_client.store_event.call_args_list]
     assert "session_start" not in calls
 
 
 @pytest.mark.asyncio
-async def test_session_manager_initialize_with_memories(mock_memory_client):
-    """Test session initialization with existing memories."""
+@patch('memory.session_manager.get_config')
+async def test_session_manager_initialize_with_past_sessions(mock_get_config, mock_memory_client, mock_config):
+    """Test session initialization with past session summaries."""
     from memory.session_manager import MemorySessionManager
     
-    # Mock memory records
-    mock_memory = MagicMock()
-    mock_memory.content = "Past conversation about weather"
-    mock_memory_client.retrieve_memories.return_value = [mock_memory]
+    mock_get_config.return_value = mock_config
+    
+    # Mock past sessions
+    past_sessions = [
+        {"session_id": "session-1", "summary": "Summary 1"},
+        {"session_id": "session-2", "summary": "Summary 2"}
+    ]
+    mock_memory_client.list_sessions.return_value = past_sessions
+    
+    # Mock session summaries
+    mock_memory_client.get_session_summary.side_effect = [
+        {"content": {"text": "Past conversation about weather"}, "createdAt": "2024-01-01"},
+        {"content": {"text": "Past conversation about coding"}, "createdAt": "2024-01-02"}
+    ]
     
     manager = MemorySessionManager(
         memory_client=mock_memory_client,
-        actor_id="user@example.com"
+        actor_id="user@example.com",
+        session_id="current-session"  # Different from past sessions
     )
     
     await manager.initialize()
     
     context = manager.get_context()
     assert context is not None
-    assert "Past conversation" in context
+    assert "Here is relevant information from previous conversations" in context
+    assert "weather" in context or "coding" in context
+    assert "[Memory 1]" in context
+    assert "[Memory 2]" in context
 
 
 @pytest.mark.asyncio
-async def test_session_manager_initialize_with_preferences(mock_memory_client):
+@patch('memory.session_manager.get_config')
+async def test_session_manager_initialize_with_preferences(mock_get_config, mock_memory_client, mock_config):
     """Test session initialization with user preferences."""
     from memory.session_manager import MemorySessionManager
     
+    mock_get_config.return_value = mock_config
+    
     # Mock preference record
-    mock_pref = MagicMock()
-    mock_pref.content = "User prefers dark mode"
+    mock_pref = {"content": {"text": "User prefers dark mode"}}
     mock_memory_client.get_user_preferences.return_value = [mock_pref]
     
     manager = MemorySessionManager(
@@ -125,40 +161,53 @@ async def test_session_manager_initialize_with_preferences(mock_memory_client):
     
     context = manager.get_context()
     assert context is not None
+    assert "User Preferences" in context
     assert "dark mode" in context
 
 
 @pytest.mark.asyncio
-async def test_session_manager_initialize_with_both(mock_memory_client):
-    """Test session initialization with both memories and preferences."""
+@patch('memory.session_manager.get_config')
+async def test_session_manager_initialize_with_both(mock_get_config, mock_memory_client, mock_config):
+    """Test session initialization with both past sessions and preferences."""
     from memory.session_manager import MemorySessionManager
     
-    # Mock memory and preference records
-    mock_memory = MagicMock()
-    mock_memory.content = "Past conversation"
-    mock_memory_client.retrieve_memories.return_value = [mock_memory]
+    mock_get_config.return_value = mock_config
     
-    mock_pref = MagicMock()
-    mock_pref.content = "User preference"
+    # Mock past sessions
+    past_sessions = [{"session_id": "session-1", "summary": "Summary 1"}]
+    mock_memory_client.list_sessions.return_value = past_sessions
+    mock_memory_client.get_session_summary.return_value = {
+        "content": {"text": "Past conversation about weather"}
+    }
+    
+    # Mock preferences
+    mock_pref = {"content": {"text": "User preference"}}
     mock_memory_client.get_user_preferences.return_value = [mock_pref]
     
     manager = MemorySessionManager(
         memory_client=mock_memory_client,
-        actor_id="user@example.com"
+        actor_id="user@example.com",
+        session_id="current-session"
     )
     
     await manager.initialize()
     
     context = manager.get_context()
     assert context is not None
-    assert "Past conversation" in context
+    assert "Here is relevant information from previous conversations" in context
+    assert "weather" in context
+    assert "User Preferences" in context
     assert "User preference" in context
+    assert "Use this information to provide personalized responses" in context
 
 
 @pytest.mark.asyncio
-async def test_session_manager_initialize_empty_memories(mock_memory_client):
-    """Test session initialization with no memories or preferences."""
+@patch('memory.session_manager.get_config')
+async def test_session_manager_initialize_empty_memories(mock_get_config, mock_memory_client, mock_config):
+    """Test session initialization with no past sessions or preferences."""
     from memory.session_manager import MemorySessionManager
+    
+    mock_get_config.return_value = mock_config
     
     manager = MemorySessionManager(
         memory_client=mock_memory_client,
@@ -172,11 +221,13 @@ async def test_session_manager_initialize_empty_memories(mock_memory_client):
 
 
 @pytest.mark.asyncio
-async def test_session_manager_initialize_error_handling(mock_memory_client):
+@patch('memory.session_manager.get_config')
+async def test_session_manager_initialize_error_handling(mock_get_config, mock_memory_client, mock_config):
     """Test that initialization continues even if memory operations fail."""
     from memory.session_manager import MemorySessionManager
     
-    mock_memory_client.retrieve_memories.side_effect = Exception("Memory error")
+    mock_get_config.return_value = mock_config
+    mock_memory_client.list_sessions.side_effect = Exception("Memory error")
     
     manager = MemorySessionManager(
         memory_client=mock_memory_client,
@@ -407,7 +458,7 @@ async def test_finalize_session(mock_memory_client):
     
     mock_memory_client.store_event.assert_called()
     # Check that session_end event was stored
-    calls = [call[1]["event_type"] for call in mock_memory_client.store_event.call_args_list]
+    calls = [call.kwargs.get("event_type") or call[1].get("event_type") for call in mock_memory_client.store_event.call_args_list]
     assert "session_end" in calls
 
 
@@ -428,52 +479,184 @@ async def test_finalize_session_error_handling(mock_memory_client):
 
 
 @pytest.mark.asyncio
-async def test_context_building_with_dict_records(mock_memory_client):
-    """Test context building with dict-like memory records."""
+@patch('memory.session_manager.get_config')
+async def test_context_building_filters_current_session(mock_get_config, mock_memory_client, mock_config):
+    """Test that context building filters out the current session."""
     from memory.session_manager import MemorySessionManager
     
-    # Mock memory records as dicts
-    mock_memory_client.retrieve_memories.return_value = [
+    mock_get_config.return_value = mock_config
+    
+    current_session_id = "current-session-123"
+    
+    # Mock past sessions including current session
+    past_sessions = [
+        {"session_id": "session-1", "summary": "Summary 1"},
+        {"session_id": current_session_id, "summary": "Current session"},  # Should be filtered
+        {"session_id": "session-2", "summary": "Summary 2"}
+    ]
+    mock_memory_client.list_sessions.return_value = past_sessions
+    
+    # Mock session summaries
+    mock_memory_client.get_session_summary.side_effect = [
         {"content": {"text": "Memory 1"}},
         {"content": {"text": "Memory 2"}}
     ]
     
     manager = MemorySessionManager(
         memory_client=mock_memory_client,
-        actor_id="user@example.com"
+        actor_id="user@example.com",
+        session_id=current_session_id
     )
     
     await manager.initialize()
     
     context = manager.get_context()
-    # Should handle dict records (though current implementation uses hasattr)
-    assert context is not None or context is None  # May not handle dicts perfectly
+    assert context is not None
+    # Should not include current session
+    assert current_session_id not in context or "Current session" not in context
+    # Should include past sessions
+    assert "Memory 1" in context or "Memory 2" in context
 
 
 @pytest.mark.asyncio
-async def test_context_building_limits_records(mock_memory_client):
-    """Test that context building limits to top 3 records."""
+@patch('memory.session_manager.get_config')
+async def test_context_building_limits_to_past_sessions_count(mock_get_config, mock_memory_client, mock_config):
+    """Test that context building limits to PAST_SESSIONS_COUNT (default 3)."""
     from memory.session_manager import MemorySessionManager
     
-    # Create 5 memory records
-    memories = []
-    for i in range(5):
-        mock_mem = MagicMock()
-        mock_mem.content = f"Memory {i}"
-        memories.append(mock_mem)
+    mock_get_config.return_value = mock_config
+    mock_config.get_config_value.return_value = "3"  # Default is 3
     
-    mock_memory_client.retrieve_memories.return_value = memories
+    # Create 5 past sessions
+    past_sessions = []
+    for i in range(5):
+        past_sessions.append({"session_id": f"session-{i}", "summary": f"Summary {i}"})
+    
+    mock_memory_client.list_sessions.return_value = past_sessions
+    
+    # Mock session summaries
+    def mock_get_summary(actor_id, session_id):
+        session_num = session_id.split("-")[1]
+        return {"content": {"text": f"Memory {session_num}"}}
+    
+    mock_memory_client.get_session_summary.side_effect = mock_get_summary
     
     manager = MemorySessionManager(
         memory_client=mock_memory_client,
-        actor_id="user@example.com"
+        actor_id="user@example.com",
+        session_id="current-session"
     )
     
     await manager.initialize()
     
     context = manager.get_context()
-    # Should only include top 3
+    # Should only include top 3 (PAST_SESSIONS_COUNT)
     if context:
-        # Count occurrences of "Memory" to verify limit
-        assert context.count("Memory") <= 3
+        # Count occurrences of "[Memory" to verify limit
+        assert context.count("[Memory") <= 3
+
+
+@pytest.mark.asyncio
+@patch('memory.session_manager.get_config')
+async def test_context_building_with_timestamps(mock_get_config, mock_memory_client, mock_config):
+    """Test that context includes timestamps when available."""
+    from memory.session_manager import MemorySessionManager
+    
+    mock_get_config.return_value = mock_config
+    
+    past_sessions = [{"session_id": "session-1", "summary": "Summary 1"}]
+    mock_memory_client.list_sessions.return_value = past_sessions
+    
+    # Mock session summary with timestamp
+    mock_memory_client.get_session_summary.return_value = {
+        "content": {"text": "Past conversation"},
+        "createdAt": "2024-01-01T10:00:00Z",
+        "updatedAt": "2024-01-01T11:00:00Z"
+    }
+    
+    manager = MemorySessionManager(
+        memory_client=mock_memory_client,
+        actor_id="user@example.com",
+        session_id="current-session"
+    )
+    
+    await manager.initialize()
+    
+    context = manager.get_context()
+    assert context is not None
+    # Should include timestamp in format
+    assert "Session: session-1" in context
+    assert "2024-01-01" in context or "11:00:00" in context
+
+
+@pytest.mark.asyncio
+@patch('memory.session_manager.get_config')
+async def test_context_building_handles_missing_summaries(mock_get_config, mock_memory_client, mock_config):
+    """Test that context building handles sessions without summaries gracefully."""
+    from memory.session_manager import MemorySessionManager
+    
+    mock_get_config.return_value = mock_config
+    
+    past_sessions = [
+        {"session_id": "session-1", "summary": "Summary 1"},
+        {"session_id": "session-2", "summary": "Summary 2"}
+    ]
+    mock_memory_client.list_sessions.return_value = past_sessions
+    
+    # First session has summary, second doesn't
+    mock_memory_client.get_session_summary.side_effect = [
+        {"content": {"text": "Memory 1"}},
+        None  # No summary available yet
+    ]
+    
+    manager = MemorySessionManager(
+        memory_client=mock_memory_client,
+        actor_id="user@example.com",
+        session_id="current-session"
+    )
+    
+    await manager.initialize()
+    
+    context = manager.get_context()
+    # Should still work with partial summaries
+    assert context is not None
+    assert "Memory 1" in context
+    # Should only have one memory entry
+    assert context.count("[Memory") == 1
+
+
+@pytest.mark.asyncio
+@patch('memory.session_manager.get_config')
+async def test_context_building_handles_summary_retrieval_error(mock_get_config, mock_memory_client, mock_config):
+    """Test that context building handles errors when retrieving individual summaries."""
+    from memory.session_manager import MemorySessionManager
+    
+    mock_get_config.return_value = mock_config
+    
+    past_sessions = [
+        {"session_id": "session-1", "summary": "Summary 1"},
+        {"session_id": "session-2", "summary": "Summary 2"}
+    ]
+    mock_memory_client.list_sessions.return_value = past_sessions
+    
+    # First session succeeds, second fails
+    mock_memory_client.get_session_summary.side_effect = [
+        {"content": {"text": "Memory 1"}},
+        Exception("Failed to retrieve summary")
+    ]
+    
+    manager = MemorySessionManager(
+        memory_client=mock_memory_client,
+        actor_id="user@example.com",
+        session_id="current-session"
+    )
+    
+    await manager.initialize()
+    
+    context = manager.get_context()
+    # Should still work with partial summaries
+    assert context is not None
+    assert "Memory 1" in context
+    # Should only have one memory entry (second one failed)
+    assert context.count("[Memory") == 1
 
