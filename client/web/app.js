@@ -153,7 +153,7 @@ async function queryMemories() {
         
         if (response.ok) {
             const data = await response.json();
-            const resultsDiv = document.getElementById('preferences');
+            const resultsDiv = document.getElementById('memoryResults');
             resultsDiv.innerHTML = '<h4>Search Results:</h4>';
             if (data.memories && data.memories.length > 0) {
                 data.memories.forEach(mem => {
@@ -162,18 +162,31 @@ async function queryMemories() {
                     memDiv.style.margin = '5px 0';
                     memDiv.style.background = 'white';
                     memDiv.style.borderRadius = '5px';
-                    memDiv.textContent = mem.content || JSON.stringify(mem);
+                    memDiv.style.border = '1px solid #ddd';
+                    
+                    const namespaceDiv = document.createElement('div');
+                    namespaceDiv.style.fontSize = '12px';
+                    namespaceDiv.style.color = '#666';
+                    namespaceDiv.style.marginBottom = '5px';
+                    namespaceDiv.textContent = `Namespace: ${mem.namespace || 'N/A'}`;
+                    memDiv.appendChild(namespaceDiv);
+                    
+                    const contentDiv = document.createElement('div');
+                    contentDiv.textContent = mem.content || JSON.stringify(mem);
+                    memDiv.appendChild(contentDiv);
+                    
                     resultsDiv.appendChild(memDiv);
                 });
             } else {
                 resultsDiv.innerHTML += '<p>No memories found.</p>';
             }
         } else {
-            alert('Error querying memories');
+            const errorText = await response.text();
+            alert(`Error querying memories: ${errorText}`);
         }
     } catch (error) {
         console.error('Error querying memories:', error);
-        alert('Error querying memories');
+        alert('Error querying memories: ' + error.message);
     }
 }
 
@@ -201,18 +214,33 @@ async function loadPreferences() {
                     prefDiv.style.margin = '5px 0';
                     prefDiv.style.background = 'white';
                     prefDiv.style.borderRadius = '5px';
-                    prefDiv.textContent = pref.content || JSON.stringify(pref);
+                    prefDiv.style.border = '1px solid #ddd';
+                    
+                    if (pref.namespace) {
+                        const namespaceDiv = document.createElement('div');
+                        namespaceDiv.style.fontSize = '12px';
+                        namespaceDiv.style.color = '#666';
+                        namespaceDiv.style.marginBottom = '5px';
+                        namespaceDiv.textContent = `Namespace: ${pref.namespace}`;
+                        prefDiv.appendChild(namespaceDiv);
+                    }
+                    
+                    const contentDiv = document.createElement('div');
+                    contentDiv.textContent = pref.content || JSON.stringify(pref);
+                    prefDiv.appendChild(contentDiv);
+                    
                     prefsDiv.appendChild(prefDiv);
                 });
             } else {
                 prefsDiv.innerHTML += '<p>No preferences found.</p>';
             }
         } else {
-            alert('Error loading preferences');
+            const errorText = await response.text();
+            alert(`Error loading preferences: ${errorText}`);
         }
     } catch (error) {
         console.error('Error loading preferences:', error);
-        alert('Error loading preferences');
+        alert('Error loading preferences: ' + error.message);
     }
 }
 
@@ -240,18 +268,108 @@ async function loadSessions() {
                     sessionDiv.style.margin = '5px 0';
                     sessionDiv.style.background = 'white';
                     sessionDiv.style.borderRadius = '5px';
-                    sessionDiv.textContent = `Session: ${session.session_id || session.id}`;
+                    sessionDiv.style.border = '1px solid #ddd';
+                    
+                    const sessionId = session.session_id || session.id;
+                    const summary = session.summary || 'No summary available';
+                    
+                    const headerDiv = document.createElement('div');
+                    headerDiv.style.display = 'flex';
+                    headerDiv.style.justifyContent = 'space-between';
+                    headerDiv.style.alignItems = 'center';
+                    headerDiv.style.marginBottom = '5px';
+                    
+                    const sessionIdDiv = document.createElement('div');
+                    sessionIdDiv.style.fontWeight = 'bold';
+                    sessionIdDiv.textContent = `Session: ${sessionId}`;
+                    headerDiv.appendChild(sessionIdDiv);
+                    
+                    const viewBtn = document.createElement('button');
+                    viewBtn.textContent = 'View Details';
+                    viewBtn.style.background = '#007bff';
+                    viewBtn.style.color = 'white';
+                    viewBtn.style.border = 'none';
+                    viewBtn.style.padding = '5px 10px';
+                    viewBtn.style.borderRadius = '3px';
+                    viewBtn.style.cursor = 'pointer';
+                    viewBtn.onclick = () => viewSessionDetails(sessionId);
+                    headerDiv.appendChild(viewBtn);
+                    
+                    sessionDiv.appendChild(headerDiv);
+                    
+                    const summaryDiv = document.createElement('div');
+                    summaryDiv.style.fontSize = '14px';
+                    summaryDiv.style.color = '#666';
+                    summaryDiv.textContent = summary.length > 100 ? summary.substring(0, 100) + '...' : summary;
+                    sessionDiv.appendChild(summaryDiv);
+                    
                     sessionsDiv.appendChild(sessionDiv);
                 });
             } else {
                 sessionsDiv.innerHTML += '<p>No sessions found.</p>';
             }
         } else {
-            alert('Error loading sessions');
+            const errorText = await response.text();
+            alert(`Error loading sessions: ${errorText}`);
         }
     } catch (error) {
         console.error('Error loading sessions:', error);
-        alert('Error loading sessions');
+        alert('Error loading sessions: ' + error.message);
+    }
+}
+
+async function viewSessionDetails(sessionId) {
+    if (!authToken) {
+        alert('Please login first');
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_BASE}/api/memory/sessions/${sessionId}`, {
+            headers: {
+                'Authorization': `Bearer ${authToken}`
+            }
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            const modal = document.getElementById('sessionModal');
+            const contentDiv = document.getElementById('sessionDetailContent');
+            
+            contentDiv.innerHTML = `
+                <div style="margin-bottom: 15px;">
+                    <strong>Session ID:</strong> ${data.session_id}
+                </div>
+                ${data.namespace ? `<div style="margin-bottom: 15px;"><strong>Namespace:</strong> ${data.namespace}</div>` : ''}
+                <div style="margin-bottom: 15px;">
+                    <strong>Summary:</strong>
+                    <div style="margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 5px; white-space: pre-wrap;">${data.summary || 'No summary available'}</div>
+                </div>
+            `;
+            
+            modal.style.display = 'block';
+        } else if (response.status === 404) {
+            alert('Session not found');
+        } else {
+            const errorText = await response.text();
+            alert(`Error loading session details: ${errorText}`);
+        }
+    } catch (error) {
+        console.error('Error loading session details:', error);
+        alert('Error loading session details: ' + error.message);
+    }
+}
+
+function closeSessionModal() {
+    const modal = document.getElementById('sessionModal');
+    modal.style.display = 'none';
+}
+
+// Close modal when clicking outside of it
+window.onclick = function(event) {
+    const modal = document.getElementById('sessionModal');
+    if (event.target === modal) {
+        closeSessionModal();
     }
 }
 

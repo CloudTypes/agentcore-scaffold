@@ -587,22 +587,47 @@ async def query_memories(
     
     actor_id = user.get("email")
     query_text = query.get("query", "")
+    namespace_prefix = query.get("namespace")
+    memory_type = query.get("memory_type")  # "summaries", "preferences", or "semantic"
     
     memories = memory_client.retrieve_memories(
         actor_id=actor_id,
         query=query_text if query_text else None,
-        top_k=query.get("top_k", 5)
+        namespace_prefix=namespace_prefix,
+        top_k=query.get("top_k", 5),
+        memory_type=memory_type
     )
     
-    return JSONResponse(content={
-        "memories": [
-            {
-                "content": getattr(m, "content", str(m)),
-                "namespace": getattr(m, "namespace", ""),
-            }
-            for m in memories
-        ]
-    })
+    # Format memories for frontend
+    formatted_memories = []
+    for m in memories:
+        if isinstance(m, dict):
+            content = m.get("content", {})
+            if isinstance(content, dict):
+                text = content.get("text", "")
+            else:
+                text = str(content) if content else ""
+            
+            formatted_memories.append({
+                "content": text,
+                "namespace": m.get("namespace", "")
+            })
+        else:
+            # Fallback for object-like records
+            content_attr = getattr(m, "content", None)
+            if content_attr and isinstance(content_attr, dict):
+                text = content_attr.get("text", "")
+            elif content_attr:
+                text = str(content_attr)
+            else:
+                text = str(m)
+            
+            formatted_memories.append({
+                "content": text,
+                "namespace": getattr(m, "namespace", "")
+            })
+    
+    return JSONResponse(content={"memories": formatted_memories})
 
 
 @app.get("/api/memory/sessions")
@@ -617,7 +642,21 @@ async def list_sessions(user: Dict[str, Any] = Depends(get_current_user)):
     actor_id = user.get("email")
     sessions = memory_client.list_sessions(actor_id=actor_id)
     
-    return JSONResponse(content={"sessions": sessions})
+    # Ensure sessions are properly formatted
+    formatted_sessions = []
+    for session in sessions:
+        if isinstance(session, dict):
+            formatted_sessions.append({
+                "session_id": session.get("session_id", ""),
+                "summary": session.get("summary", "No summary available")
+            })
+        else:
+            formatted_sessions.append({
+                "session_id": getattr(session, "session_id", ""),
+                "summary": getattr(session, "summary", "No summary available")
+            })
+    
+    return JSONResponse(content={"sessions": formatted_sessions})
 
 
 @app.get("/api/memory/sessions/{session_id}")
@@ -630,12 +669,44 @@ async def get_session(session_id: str, user: Dict[str, Any] = Depends(get_curren
         )
     
     actor_id = user.get("email")
-    summary = memory_client.get_session_summary(actor_id=actor_id, session_id=session_id)
+    summary_record = memory_client.get_session_summary(actor_id=actor_id, session_id=session_id)
     
-    return JSONResponse(content={
-        "session_id": session_id,
-        "summary": summary
-    })
+    if not summary_record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found"
+        )
+    
+    # Format summary for frontend
+    if isinstance(summary_record, dict):
+        content = summary_record.get("content", {})
+        if isinstance(content, dict):
+            text = content.get("text", "")
+        else:
+            text = str(content) if content else ""
+        
+        return JSONResponse(content={
+            "session_id": session_id,
+            "namespace": summary_record.get("namespace", ""),
+            "summary": text,
+            "full_record": summary_record
+        })
+    else:
+        # Fallback for object-like records
+        content_attr = getattr(summary_record, "content", None)
+        if content_attr and isinstance(content_attr, dict):
+            text = content_attr.get("text", "")
+        elif content_attr:
+            text = str(content_attr)
+        else:
+            text = str(summary_record)
+        
+        return JSONResponse(content={
+            "session_id": session_id,
+            "namespace": getattr(summary_record, "namespace", ""),
+            "summary": text,
+            "full_record": str(summary_record)
+        })
 
 
 @app.delete("/api/memory/sessions/{session_id}")

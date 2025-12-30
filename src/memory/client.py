@@ -33,11 +33,13 @@ class MemoryClient:
             region: AWS region for memory resource
             memory_id: Optional memory resource ID (will be created if not provided)
         """
-        self.region = region or os.getenv("AWS_REGION", "us-east-1")
+        # Check AGENTCORE_MEMORY_REGION first, then AWS_REGION, then default
+        self.region = region or os.getenv("AGENTCORE_MEMORY_REGION") or os.getenv("AWS_REGION", "us-east-1")
         self.memory_id = memory_id or os.getenv("AGENTCORE_MEMORY_ID")
         self._client = None
         self._control_plane_client = None
         self._memory_resource = None
+        logger.info(f"Memory client initialized with region: {self.region}, memory_id: {self.memory_id}")
         
     def _get_client(self) -> AgentCoreMemoryClient:
         """Get or create the AgentCore Memory client."""
@@ -202,16 +204,18 @@ class MemoryClient:
         actor_id: str,
         query: Optional[str] = None,
         namespace_prefix: Optional[str] = None,
-        top_k: int = 5
+        top_k: int = 5,
+        memory_type: Optional[str] = None
     ) -> List[Any]:
         """
         Retrieve relevant memories (LTM) for a user.
         
         Args:
             actor_id: User identifier (email)
-            query: Optional query string for semantic search
+            query: Optional query string for semantic search (required for semantic/preferences)
             namespace_prefix: Optional namespace prefix to filter memories
             top_k: Number of memories to retrieve
+            memory_type: Type of memory to retrieve - "summaries", "preferences", or "semantic" (default: semantic)
             
         Returns:
             List of memory records
@@ -224,43 +228,152 @@ class MemoryClient:
             return []
         
         try:
-            client = self._get_client()
-            
-            # searchQuery is required and must have min length 1
-            # If no query provided, skip retrieval
-            if not query or not query.strip():
-                logger.debug("No query provided, skipping memory retrieval")
-                return []
-            
             # Sanitize actor_id for namespace
             sanitized_actor_id = self._sanitize_actor_id(actor_id)
             
-            # Build namespace if not provided
-            if namespace_prefix is None:
-                namespace = f"/semantic/{sanitized_actor_id}"
+            # Determine memory type and namespace
+            if memory_type == "summaries" or (namespace_prefix and "summaries" in namespace_prefix):
+                # For summaries, use ListMemoryRecords (no semantic search needed)
+                return self._retrieve_summaries_list(actor_id, sanitized_actor_id, namespace_prefix, top_k)
+            elif memory_type == "preferences" or (namespace_prefix and "preferences" in namespace_prefix):
+                # For preferences, try ListMemoryRecords first, fall back to semantic search
+                return self._retrieve_preferences_list(actor_id, sanitized_actor_id, top_k) or \
+                       self._retrieve_memories_semantic(actor_id, sanitized_actor_id, query, namespace_prefix, top_k)
             else:
-                # Replace actorId placeholder in namespace
-                namespace = namespace_prefix.replace("{actorId}", sanitized_actor_id)
-            
-            # Build searchCriteria dict
-            search_criteria = {
-                "searchQuery": query.strip(),
-                "topK": top_k
-            }
-            
-            # Retrieve memory records using correct API signature
-            response = client.retrieve_memory_records(
-                memoryId=self.memory_id,
-                namespace=namespace,
-                searchCriteria=search_criteria
-            )
-            
-            # Extract records from response
-            records = response.get("memoryRecords", [])
-            logger.debug(f"Retrieved {len(records)} memories for actor {sanitized_actor_id}")
-            return records
+                # For semantic memory, use semantic search (requires query)
+                return self._retrieve_memories_semantic(actor_id, sanitized_actor_id, query, namespace_prefix, top_k)
         except Exception as e:
-            logger.error(f"Failed to retrieve memories: {e}")
+            logger.error(f"Failed to retrieve memories: {e}", exc_info=True)
+            return []
+    
+    def _retrieve_memories_semantic(
+        self,
+        actor_id: str,
+        sanitized_actor_id: str,
+        query: Optional[str],
+        namespace_prefix: Optional[str],
+        top_k: int
+    ) -> List[Any]:
+        """Retrieve memories using semantic search (for semantic memory type)."""
+        client = self._get_client()
+        
+        # searchQuery is required and must have min length 1
+        # If no query provided, skip retrieval
+        if not query or not query.strip():
+            logger.debug("No query provided for semantic search, skipping memory retrieval")
+            return []
+        
+        # Build namespace if not provided
+        if namespace_prefix is None:
+            namespace = f"/semantic/{sanitized_actor_id}"
+        else:
+            # Replace actorId placeholder in namespace
+            namespace = namespace_prefix.replace("{actorId}", sanitized_actor_id)
+        
+        # Build searchCriteria dict
+        search_criteria = {
+            "searchQuery": query.strip(),
+            "topK": top_k
+        }
+        
+        # Retrieve memory records using correct API signature
+        response = client.retrieve_memory_records(
+            memoryId=self.memory_id,
+            namespace=namespace,
+            searchCriteria=search_criteria
+        )
+        
+        # Extract records from response
+        records = response.get("memoryRecords", [])
+        logger.debug(f"Retrieved {len(records)} semantic memories for actor {sanitized_actor_id}")
+        return records
+    
+    def _retrieve_summaries_list(
+        self,
+        actor_id: str,
+        sanitized_actor_id: str,
+        namespace_prefix: Optional[str],
+        top_k: int
+    ) -> List[Any]:
+        """Retrieve summaries using ListMemoryRecords (no semantic search required)."""
+        bedrock_client = boto3.client('bedrock-agentcore', region_name=self.region)
+        
+        # Build namespace
+        if namespace_prefix:
+            namespace = namespace_prefix.replace("{actorId}", sanitized_actor_id)
+        else:
+            namespace = f"/summaries/{sanitized_actor_id}"
+        
+        all_records = []
+        next_token = None
+        
+        try:
+            while len(all_records) < top_k:
+                params = {
+                    "memoryId": self.memory_id,
+                    "namespace": namespace,
+                    "maxResults": min(100, top_k - len(all_records))
+                }
+                if next_token:
+                    params["nextToken"] = next_token
+                
+                response = bedrock_client.list_memory_records(**params)
+                records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
+                # Add namespace to each record (since it's not in the response)
+                for record in records:
+                    if isinstance(record, dict) and 'namespace' not in record:
+                        record['namespace'] = namespace
+                all_records.extend(records)
+                
+                next_token = response.get("nextToken")
+                if not next_token or len(records) == 0:
+                    break
+            
+            logger.debug(f"Retrieved {len(all_records)} summaries using ListMemoryRecords for actor {sanitized_actor_id}")
+            return all_records[:top_k]
+        except Exception as e:
+            logger.error(f"Failed to retrieve summaries using ListMemoryRecords: {e}")
+            return []
+    
+    def _retrieve_preferences_list(
+        self,
+        actor_id: str,
+        sanitized_actor_id: str,
+        top_k: int
+    ) -> List[Any]:
+        """Retrieve preferences using ListMemoryRecords (no semantic search required)."""
+        bedrock_client = boto3.client('bedrock-agentcore', region_name=self.region)
+        namespace = f"/preferences/{sanitized_actor_id}"
+        
+        all_records = []
+        next_token = None
+        
+        try:
+            while len(all_records) < top_k:
+                params = {
+                    "memoryId": self.memory_id,
+                    "namespace": namespace,
+                    "maxResults": min(100, top_k - len(all_records))
+                }
+                if next_token:
+                    params["nextToken"] = next_token
+                
+                response = bedrock_client.list_memory_records(**params)
+                records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
+                # Add namespace to each record (since it's not in the response)
+                for record in records:
+                    if isinstance(record, dict) and 'namespace' not in record:
+                        record['namespace'] = namespace
+                all_records.extend(records)
+                
+                next_token = response.get("nextToken")
+                if not next_token or len(records) == 0:
+                    break
+            
+            logger.debug(f"Retrieved {len(all_records)} preferences using ListMemoryRecords for actor {sanitized_actor_id}")
+            return all_records[:top_k]
+        except Exception as e:
+            logger.debug(f"Failed to retrieve preferences using ListMemoryRecords: {e}")
             return []
     
     def get_session_summary(self, actor_id: str, session_id: str) -> Optional[Dict[str, Any]]:
@@ -285,20 +398,36 @@ class MemoryClient:
             sanitized_actor_id = self._sanitize_actor_id(actor_id)
             namespace = f"/summaries/{sanitized_actor_id}/{session_id}"
             
-            # Use ListMemoryRecords to get all records in this namespace
+            # Use ListMemoryRecords to get all records in this namespace with pagination
             # This doesn't require a semantic search query
             try:
-                response = bedrock_client.list_memory_records(
-                    memoryId=self.memory_id,
-                    namespace=namespace,
-                    maxResults=10
-                )
+                all_records = []
+                next_token = None
                 
-                records = response.get("memoryRecords", [])
+                while True:
+                    params = {
+                        "memoryId": self.memory_id,
+                        "namespace": namespace,
+                        "maxResults": 100
+                    }
+                    if next_token:
+                        params["nextToken"] = next_token
+                    
+                    response = bedrock_client.list_memory_records(**params)
+                    records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
+                    # Add namespace to each record (since it's not in the response)
+                    for record in records:
+                        if isinstance(record, dict) and 'namespace' not in record:
+                            record['namespace'] = namespace
+                    all_records.extend(records)
+                    
+                    next_token = response.get("nextToken")
+                    if not next_token or len(records) == 0:
+                        break
                 
-                if records:
+                if all_records:
                     # Return the first (and likely only) record
-                    record = records[0]
+                    record = all_records[0]
                     # Convert to dict if needed
                     if isinstance(record, dict):
                         return record
@@ -311,17 +440,35 @@ class MemoryClient:
                 
                 logger.debug(f"No records found in exact namespace: {namespace}")
                 
-                # Try parent namespace (without session ID) and filter
+                # Try parent namespace (without session ID) and filter with pagination
                 parent_namespace = f"/summaries/{sanitized_actor_id}"
                 try:
-                    response = bedrock_client.list_memory_records(
-                        memoryId=self.memory_id,
-                        namespace=parent_namespace,
-                        maxResults=100
-                    )
-                    all_records = response.get("memoryRecords", [])
+                    all_parent_records = []
+                    next_token = None
+                    
+                    while True:
+                        params = {
+                            "memoryId": self.memory_id,
+                            "namespace": parent_namespace,
+                            "maxResults": 100
+                        }
+                        if next_token:
+                            params["nextToken"] = next_token
+                        
+                        response = bedrock_client.list_memory_records(**params)
+                        records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
+                        # Add namespace to each record (since it's not in the response)
+                        for record in records:
+                            if isinstance(record, dict) and 'namespace' not in record:
+                                record['namespace'] = parent_namespace
+                        all_parent_records.extend(records)
+                        
+                        next_token = response.get("nextToken")
+                        if not next_token or len(records) == 0:
+                            break
+                    
                     # Filter for this specific session ID
-                    for record in all_records:
+                    for record in all_parent_records:
                         record_ns = record.get("namespace", "")
                         if session_id in record_ns:
                             if isinstance(record, dict):
@@ -362,7 +509,7 @@ class MemoryClient:
                             "topK": 1
                         }
                     )
-                    found_records = response.get("memoryRecords", [])
+                    found_records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
                     if found_records:
                         record = found_records[0]
                         if isinstance(record, dict):
@@ -382,7 +529,7 @@ class MemoryClient:
     
     def get_user_preferences(self, actor_id: str) -> List[Any]:
         """
-        Get user preferences from memory.
+        Get user preferences from memory using ListMemoryRecords.
         
         Args:
             actor_id: User identifier (email)
@@ -390,12 +537,18 @@ class MemoryClient:
         Returns:
             List of preference memory records
         """
-        # Use a query to retrieve preferences (searchQuery is required)
+        # Try ListMemoryRecords first (no query needed)
+        preferences = self._retrieve_preferences_list(actor_id, self._sanitize_actor_id(actor_id), 10)
+        if preferences:
+            return preferences
+        
+        # Fall back to semantic search if ListMemoryRecords returns nothing
         return self.retrieve_memories(
             actor_id=actor_id,
             namespace_prefix=f"/preferences/{{actorId}}",
             query="user preferences",
-            top_k=10
+            top_k=10,
+            memory_type="preferences"
         )
     
     def list_sessions(self, actor_id: str, top_k: int = 50) -> List[Dict[str, Any]]:
@@ -431,21 +584,36 @@ class MemoryClient:
             namespace = f"/summaries/{sanitized_actor_id}"
             
             try:
-                # Try to list records in the actor's summaries namespace
-                # Note: ListMemoryRecords might require exact namespace match
-                response = bedrock_client.list_memory_records(
-                    memoryId=self.memory_id,
-                    namespace=namespace,
-                    maxResults=top_k * 10  # Get more to find all sessions
-                )
+                # Try to list records in the actor's summaries namespace with pagination
+                all_records = []
+                next_token = None
                 
-                records = response.get("memoryRecords", [])
+                while len(all_records) < top_k * 10:
+                    params = {
+                        "memoryId": self.memory_id,
+                        "namespace": namespace,
+                        "maxResults": 100
+                    }
+                    if next_token:
+                        params["nextToken"] = next_token
+                    
+                    response = bedrock_client.list_memory_records(**params)
+                    records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
+                    # Add namespace to each record (since it's not in the response)
+                    for record in records:
+                        if isinstance(record, dict) and 'namespace' not in record:
+                            record['namespace'] = namespace
+                    all_records.extend(records)
+                    
+                    next_token = response.get("nextToken")
+                    if not next_token or len(records) == 0:
+                        break
                 
                 # Extract unique session IDs from namespaces
                 seen_session_ids = set()
                 sessions = []
                 
-                for record in records:
+                for record in all_records:
                     ns = record.get("namespace", "")
                     # Namespace format: /summaries/{actorId}/{sessionId}
                     parts = ns.split("/")
@@ -493,7 +661,7 @@ class MemoryClient:
                             "topK": top_k * 2
                         }
                     )
-                    found_records = response.get("memoryRecords", [])
+                    found_records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
                     if found_records:
                         all_records.extend(found_records)
                 except Exception:

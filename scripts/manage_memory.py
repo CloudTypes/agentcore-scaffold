@@ -10,6 +10,7 @@ import boto3
 import sys
 import os
 import json
+import time
 from pathlib import Path
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
@@ -30,8 +31,8 @@ except ImportError:
     click.echo("❌ bedrock-agentcore package not found. Install it with: pip install bedrock-agentcore", err=True)
     sys.exit(1)
 
-# Get region from environment or default
-REGION = os.getenv("AWS_REGION") or os.getenv("AGENTCORE_MEMORY_REGION") or "us-east-1"
+# Get region from environment or default - check AGENTCORE_MEMORY_REGION first
+REGION = os.getenv("AGENTCORE_MEMORY_REGION") or os.getenv("AWS_REGION") or "us-east-1"
 
 # Initialize clients (will be recreated if region changes)
 def get_ssm_client(region=None):
@@ -442,28 +443,55 @@ def query_session(actor_id, session_id, try_all_namespaces, memory_id):
             
             # Try the exact namespace first
             try:
+                # Note: ListMemoryRecords might have a delay after record creation
+                # CloudWatch logs show records are created, but there may be an indexing delay
+                # before they're queryable via ListMemoryRecords
+                
                 response = bedrock_client.list_memory_records(
                     memoryId=memory_id,
                     namespace=namespace,
-                    maxResults=10
+                    maxResults=100  # Increased to catch more records
                 )
                 
-                found_records = response.get("memoryRecords", [])
+                found_records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
+                # Add namespace to each record (since it's not in the response)
+                for record in found_records:
+                    if isinstance(record, dict) and 'namespace' not in record:
+                        record['namespace'] = namespace
                 
                 # Handle pagination if there's a nextToken
                 next_token = response.get("nextToken")
-                while next_token and len(found_records) < 10:
+                while next_token:
                     try:
                         next_response = bedrock_client.list_memory_records(
                             memoryId=memory_id,
                             namespace=namespace,
-                            maxResults=10,
+                            maxResults=100,
                             nextToken=next_token
                         )
-                        found_records.extend(next_response.get("memoryRecords", []))
+                        new_records = next_response.get("memoryRecordSummaries", next_response.get("memoryRecords", []))
+                        # Add namespace to each new record
+                        for record in new_records:
+                            if isinstance(record, dict) and 'namespace' not in record:
+                                record['namespace'] = namespace
+                        found_records.extend(new_records)
                         next_token = next_response.get("nextToken")
+                        if not new_records:
+                            break
                     except Exception:
                         break
+                
+                # Debug: Show what we got
+                if found_records:
+                    click.echo(f"   🔍 Debug: Found {len(found_records)} record(s), checking namespaces...")
+                    for rec in found_records[:3]:  # Show first 3 for debugging
+                        rec_ns = rec.get("namespace", "N/A")
+                        rec_id = rec.get("memoryRecordId", rec.get("recordId", "N/A"))
+                        click.echo(f"      - Record ID: {rec_id}, Namespace: {rec_ns}")
+                
+                # If no records found, try GetMemoryRecord API if we have a record ID from logs
+                # Note: This would require the record ID, which we don't have from the query
+                # But we can check if there's a way to list all records and filter
                 
                 if found_records:
                     records = found_records
@@ -474,38 +502,99 @@ def query_session(actor_id, session_id, try_all_namespaces, memory_id):
                     
                     # Try parent namespace (without session ID)
                     parent_namespace = f"/summaries/{sanitized_actor_id}"
+                    click.echo(f"   🔄 Trying parent namespace: {parent_namespace}")
                     try:
-                        response = bedrock_client.list_memory_records(
-                            memoryId=memory_id,
-                            namespace=parent_namespace,
-                            maxResults=100
-                        )
-                        found_records = response.get("memoryRecords", [])
+                        all_parent_records = []
+                        next_token = None
                         
-                        # Handle pagination
-                        next_token = response.get("nextToken")
-                        while next_token:
-                            try:
-                                next_response = bedrock_client.list_memory_records(
-                                    memoryId=memory_id,
-                                    namespace=parent_namespace,
-                                    maxResults=100,
-                                    nextToken=next_token
-                                )
-                                found_records.extend(next_response.get("memoryRecords", []))
-                                next_token = next_response.get("nextToken")
-                            except Exception:
+                        while True:
+                            params = {
+                                "memoryId": memory_id,
+                                "namespace": parent_namespace,
+                                "maxResults": 100
+                            }
+                            if next_token:
+                                params["nextToken"] = next_token
+                            
+                            response = bedrock_client.list_memory_records(**params)
+                            parent_records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
+                            # Add namespace to each record (since it's not in the response)
+                            for record in parent_records:
+                                if isinstance(record, dict) and 'namespace' not in record:
+                                    record['namespace'] = parent_namespace
+                            all_parent_records.extend(parent_records)
+                            
+                            next_token = response.get("nextToken")
+                            if not next_token or len(parent_records) == 0:
                                 break
                         
+                        click.echo(f"   📊 Found {len(all_parent_records)} total record(s) in parent namespace")
+                        
                         # Filter for this session ID
-                        for record in found_records:
+                        matching_records = []
+                        for record in all_parent_records:
                             record_ns = record.get("namespace", "")
                             if session_id in record_ns:
-                                records.append(record)
-                        if records:
-                            click.echo(f"   ✅ Found {len(records)} record(s) in parent namespace (filtered by session ID)")
+                                matching_records.append(record)
+                        
+                        if matching_records:
+                            records = matching_records
+                            click.echo(f"   ✅ Found {len(records)} record(s) matching session ID")
+                        else:
+                            click.echo(f"   ❌ No records in parent namespace match session ID {session_id}")
+                            # Show available session IDs for debugging
+                            if all_parent_records:
+                                available_sessions = set()
+                                for record in all_parent_records[:10]:  # Show first 10
+                                    ns = record.get("namespace", "")
+                                    parts = ns.split("/")
+                                    if len(parts) >= 4:
+                                        available_sessions.add(parts[-1])
+                                if available_sessions:
+                                    click.echo(f"   💡 Available session IDs in parent namespace: {', '.join(sorted(available_sessions)[:5])}")
                     except Exception as e2:
                         click.echo(f"   ⚠️  Parent namespace query failed: {str(e2)[:100]}")
+                    
+                    # If still no records, try semantic search as fallback
+                    if not records:
+                        click.echo(f"   🔄 Trying semantic search as fallback...")
+                        for query_term in query_terms:
+                            try:
+                                response = client.retrieve_memory_records(
+                                    memoryId=memory_id,
+                                    namespace=namespace,
+                                    searchCriteria={
+                                        "searchQuery": query_term,
+                                        "topK": 1
+                                    }
+                                )
+                                found_records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
+                                if found_records:
+                                    records = found_records
+                                    click.echo(f"   ✅ Found with semantic search query: '{query_term}'")
+                                    break
+                            except Exception as e_search:
+                                continue
+                        
+                        # If still no records, try fallback terms
+                        if not records:
+                            for fallback_term in ["summary", "session", "memory", "topic"]:
+                                try:
+                                    response = client.retrieve_memory_records(
+                                        memoryId=memory_id,
+                                        namespace=namespace,
+                                        searchCriteria={
+                                            "searchQuery": fallback_term,
+                                            "topK": 1
+                                        }
+                                    )
+                                    found_records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
+                                    if found_records:
+                                        records = found_records
+                                        click.echo(f"   ✅ Found with fallback query: '{fallback_term}'")
+                                        break
+                                except Exception:
+                                    continue
             except Exception as e:
                 error_msg = str(e)
                 click.echo(f"   ⚠️  ListMemoryRecords failed: {error_msg[:100]}")
@@ -522,12 +611,12 @@ def query_session(actor_id, session_id, try_all_namespaces, memory_id):
                                 "topK": 1
                             }
                         )
-                        found_records = response.get("memoryRecords", [])
+                        found_records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
                         if found_records:
                             records = found_records
                             click.echo(f"   ✅ Found with semantic search query: '{query_term}'")
                             break
-                    except Exception:
+                    except Exception as e_search:
                         continue
                 
                 # If still no records, try fallback terms
@@ -542,7 +631,7 @@ def query_session(actor_id, session_id, try_all_namespaces, memory_id):
                                     "topK": 1
                                 }
                             )
-                            found_records = response.get("memoryRecords", [])
+                            found_records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
                             if found_records:
                                 records = found_records
                                 click.echo(f"   ✅ Found with fallback query: '{fallback_term}'")
@@ -586,7 +675,12 @@ def query_session(actor_id, session_id, try_all_namespaces, memory_id):
         click.echo("")
         click.echo("❌ No records found in any namespace")
         click.echo("")
+        click.echo("⚠️  IMPORTANT: If CloudWatch logs show the record was created successfully,")
+        click.echo("   but ListMemoryRecords returns no results, this is likely an indexing delay.")
+        click.echo("   AgentCore Memory may take several minutes to index records after creation.")
+        click.echo("")
         click.echo("Possible reasons:")
+        click.echo("  • Indexing delay: Records exist but aren't queryable yet (check CloudWatch logs)")
         click.echo("  • Summary hasn't been generated yet (wait 20-40 seconds after session end)")
         click.echo("  • Summary generation may take longer for short conversations")
         click.echo("  • Memory strategies not configured correctly")
@@ -594,10 +688,15 @@ def query_session(actor_id, session_id, try_all_namespaces, memory_id):
         click.echo("  • Events may not have been stored properly")
         click.echo("")
         click.echo("Troubleshooting steps:")
-        click.echo("  1. Verify memory has strategies: python scripts/manage_memory.py status")
-        click.echo("  2. Check server logs for event storage errors")
-        click.echo("  3. Try with --try-all-namespaces flag to test different namespace patterns")
-        click.echo("  4. Wait longer (summaries can take 1-2 minutes for some conversations)")
+        click.echo("  1. Check CloudWatch logs for 'Succeeded operation' messages - if present,")
+        click.echo("     the record exists but may not be indexed yet (wait 2-5 minutes)")
+        click.echo("  2. Verify memory has strategies: python scripts/manage_memory.py status")
+        click.echo("  3. Check server logs for event storage errors")
+        click.echo("  4. Try with --try-all-namespaces flag to test different namespace patterns")
+        click.echo("  5. Wait longer (summaries can take 1-2 minutes, indexing can take 2-5 minutes)")
+        click.echo("")
+        click.echo("💡 Tip: Use AWS Console > AgentCore Memory observability to see")
+        click.echo("   extraction status and verify records are being created.")
         sys.exit(1)
 
 
@@ -646,19 +745,37 @@ def list_namespaces(actor_id, namespace_prefix, top_k, use_list_api, memory_id):
     for namespace in namespaces_to_try:
         click.echo(f"📍 Querying namespace: {namespace}")
         
-        # If use_list_api flag is set, try ListMemoryRecords first
-        if use_list_api:
+        # If use_list_api flag is set (or always for summaries/preferences), try ListMemoryRecords first
+        if use_list_api or namespace_prefix in ["/summaries", "/preferences"]:
             try:
-                response = bedrock_client.list_memory_records(
-                    memoryId=memory_id,
-                    namespace=namespace,
-                    maxResults=top_k
-                )
-                records = response.get("memoryRecords", [])
-                if records:
-                    total_records += len(records)
-                    click.echo(f"   ✅ Found {len(records)} record(s) using ListMemoryRecords")
-                    for i, record in enumerate(records[:5], 1):
+                all_records = []
+                next_token = None
+                
+                while len(all_records) < top_k:
+                    params = {
+                        "memoryId": memory_id,
+                        "namespace": namespace,
+                        "maxResults": min(100, top_k - len(all_records))
+                    }
+                    if next_token:
+                        params["nextToken"] = next_token
+                    
+                    response = bedrock_client.list_memory_records(**params)
+                    records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
+                    # Add namespace to each record (since it's not in the response)
+                    for record in records:
+                        if isinstance(record, dict) and 'namespace' not in record:
+                            record['namespace'] = namespace
+                    all_records.extend(records)
+                    
+                    next_token = response.get("nextToken")
+                    if not next_token or len(records) == 0:
+                        break
+                
+                if all_records:
+                    total_records += len(all_records)
+                    click.echo(f"   ✅ Found {len(all_records)} record(s) using ListMemoryRecords")
+                    for i, record in enumerate(all_records[:5], 1):
                         actual_namespace = record.get("namespace", "N/A")
                         click.echo(f"      {i}. Namespace: {actual_namespace}")
                         content = record.get("content", {})
@@ -685,7 +802,7 @@ def list_namespaces(actor_id, namespace_prefix, top_k, use_list_api, memory_id):
                 }
             )
             
-            records = response.get("memoryRecords", [])
+            records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
             
             if records:
                 total_records += len(records)
@@ -714,7 +831,7 @@ def list_namespaces(actor_id, namespace_prefix, top_k, use_list_api, memory_id):
                             "topK": top_k
                         }
                     )
-                    records = response.get("memoryRecords", [])
+                    records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
                     if records:
                         total_records += len(records)
                         click.echo(f"   ✅ Found {len(records)} record(s) (with 'summary' query)")
@@ -809,7 +926,7 @@ def list_all_records(top_k, memory_id):
                         "topK": top_k
                     }
                 )
-                records = response.get("memoryRecords", [])
+                records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
                 if records:
                     click.echo(f"✅ Found {len(records)} record(s) in namespace: {base_ns} (query: '{query_term}')")
                     all_records.extend(records)
@@ -841,7 +958,7 @@ def list_all_records(top_k, memory_id):
                             "topK": top_k
                         }
                     )
-                    records = response.get("memoryRecords", [])
+                    records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
                     if records:
                         click.echo(f"✅ Found {len(records)} record(s) in namespace: {ns} (query: '{query_term}')")
                         all_records.extend(records)
@@ -872,7 +989,7 @@ def list_all_records(top_k, memory_id):
                         "topK": top_k
                     }
                 )
-                records = response.get("memoryRecords", [])
+                records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
                 if records:
                     click.echo(f"✅ Found {len(records)} record(s) in namespace: {ns} (query: '{query_term}')")
                     all_records.extend(records)
@@ -973,17 +1090,35 @@ def debug_memory(actor_id, session_id, memory_id):
     for ns in namespaces_to_try:
         click.echo(f"📍 Testing namespace: {ns}")
         
-        # Method 1: ListMemoryRecords
+        # Method 1: ListMemoryRecords with pagination
         try:
-            response = bedrock_client.list_memory_records(
-                memoryId=memory_id,
-                namespace=ns,
-                maxResults=100
-            )
-            records = response.get("memoryRecords", [])
-            click.echo(f"   ListMemoryRecords: {len(records)} record(s)")
-            if records:
-                for i, record in enumerate(records[:3], 1):
+            all_list_records = []
+            next_token = None
+            
+            while len(all_list_records) < 100:
+                params = {
+                    "memoryId": memory_id,
+                    "namespace": ns,
+                    "maxResults": 100
+                }
+                if next_token:
+                    params["nextToken"] = next_token
+                
+                response = bedrock_client.list_memory_records(**params)
+                records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
+                # Add namespace to each record (since it's not in the response)
+                for record in records:
+                    if isinstance(record, dict) and 'namespace' not in record:
+                        record['namespace'] = ns
+                all_list_records.extend(records)
+                
+                next_token = response.get("nextToken")
+                if not next_token or len(records) == 0:
+                    break
+            
+            click.echo(f"   ListMemoryRecords: {len(all_list_records)} record(s)")
+            if all_list_records:
+                for i, record in enumerate(all_list_records[:3], 1):
                     record_ns = record.get("namespace", "N/A")
                     click.echo(f"      {i}. Namespace: {record_ns}")
                     if session_id and session_id not in record_ns:
