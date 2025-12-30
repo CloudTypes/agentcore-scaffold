@@ -668,6 +668,33 @@ async def get_session(session_id: str, user: Dict[str, Any] = Depends(get_curren
             detail="Memory not enabled"
         )
     
+    from datetime import datetime
+    
+    def serialize_record(record):
+        """Convert datetime objects in record to strings for JSON serialization."""
+        if not isinstance(record, dict):
+            # If it's not a dict, try to convert it
+            if hasattr(record, '__dict__'):
+                record = record.__dict__
+            else:
+                return str(record)
+        
+        serialized = {}
+        for key, value in record.items():
+            if isinstance(value, datetime):
+                serialized[key] = value.isoformat()
+            elif isinstance(value, dict):
+                serialized[key] = serialize_record(value)
+            elif isinstance(value, list):
+                serialized[key] = [
+                    serialize_record(item) if isinstance(item, dict) else 
+                    (item.isoformat() if isinstance(item, datetime) else item)
+                    for item in value
+                ]
+            else:
+                serialized[key] = value
+        return serialized
+    
     actor_id = user.get("email")
     summary_record = memory_client.get_session_summary(actor_id=actor_id, session_id=session_id)
     
@@ -685,11 +712,14 @@ async def get_session(session_id: str, user: Dict[str, Any] = Depends(get_curren
         else:
             text = str(content) if content else ""
         
+        # Serialize the full record to handle datetime objects
+        serialized_record = serialize_record(summary_record)
+        
         return JSONResponse(content={
             "session_id": session_id,
             "namespace": summary_record.get("namespace", ""),
             "summary": text,
-            "full_record": summary_record
+            "full_record": serialized_record
         })
     else:
         # Fallback for object-like records
@@ -759,6 +789,223 @@ async def get_preferences(user: Dict[str, Any] = Depends(get_current_user)):
             })
     
     return JSONResponse(content={"preferences": formatted_prefs})
+
+
+@app.post("/api/memory/diagnose")
+async def diagnose_memory(
+    request: Request,
+    query: Dict[str, Any],
+    user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Run comprehensive memory diagnostics."""
+    if not memory_client:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Memory not enabled"
+        )
+    
+    import boto3
+    from botocore.exceptions import ClientError
+    from datetime import datetime
+    
+    def serialize_record(record):
+        """Convert datetime objects in record to strings for JSON serialization."""
+        if not isinstance(record, dict):
+            return record
+        
+        serialized = {}
+        for key, value in record.items():
+            if isinstance(value, datetime):
+                serialized[key] = value.isoformat()
+            elif isinstance(value, dict):
+                serialized[key] = serialize_record(value)
+            elif isinstance(value, list):
+                serialized[key] = [serialize_record(item) if isinstance(item, dict) else item for item in value]
+            else:
+                serialized[key] = value
+        return serialized
+    
+    actor_id = user.get("email")
+    session_id = query.get("session_id")
+    
+    # Sanitize actor_id
+    sanitized_actor_id = actor_id.replace("@", "_").replace(".", "_")
+    if not sanitized_actor_id[0].isalnum():
+        sanitized_actor_id = "user_" + sanitized_actor_id
+    
+    diagnostics = {
+        "user_id": actor_id,
+        "sanitized_user_id": sanitized_actor_id,
+        "session_id": session_id,
+        "memory_id": memory_client.memory_id,
+        "region": memory_client.region,
+        "checks": {}
+    }
+    
+    bedrock_client = boto3.client('bedrock-agentcore', region_name=memory_client.region)
+    
+    # Check 1: Parent namespace (summaries/{actorId})
+    parent_ns = f"/summaries/{sanitized_actor_id}"
+    try:
+        response = bedrock_client.list_memory_records(
+            memoryId=memory_client.memory_id,
+            namespace=parent_ns,
+            maxResults=10
+        )
+        records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
+        for record in records:
+            if isinstance(record, dict) and 'namespace' not in record:
+                record['namespace'] = parent_ns
+        
+        # Serialize records to handle datetime objects
+        serialized_records = [serialize_record(r) for r in records[:3]] if records else []
+        
+        diagnostics["checks"]["parent_namespace"] = {
+            "namespace": parent_ns,
+            "record_count": len(records),
+            "records": serialized_records,
+            "success": True
+        }
+    except ClientError as e:
+        error_code = e.response.get('Error', {}).get('Code', '')
+        error_msg = e.response.get('Error', {}).get('Message', '')
+        diagnostics["checks"]["parent_namespace"] = {
+            "namespace": parent_ns,
+            "error": error_msg,
+            "error_code": error_code,
+            "success": False
+        }
+    except Exception as e:
+        diagnostics["checks"]["parent_namespace"] = {
+            "namespace": parent_ns,
+            "error": str(e),
+            "success": False
+        }
+    
+    # Check 2: Exact session namespace (if session_id provided)
+    if session_id:
+        exact_ns = f"/summaries/{sanitized_actor_id}/{session_id}"
+        try:
+            response = bedrock_client.list_memory_records(
+                memoryId=memory_client.memory_id,
+                namespace=exact_ns,
+                maxResults=10
+            )
+            records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
+            for record in records:
+                if isinstance(record, dict) and 'namespace' not in record:
+                    record['namespace'] = exact_ns
+            
+            # Serialize records to handle datetime objects
+            serialized_records = [serialize_record(r) for r in records]
+            
+            diagnostics["checks"]["exact_namespace"] = {
+                "namespace": exact_ns,
+                "record_count": len(records),
+                "records": serialized_records,
+                "success": True
+            }
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', '')
+            error_msg = e.response.get('Error', {}).get('Message', '')
+            diagnostics["checks"]["exact_namespace"] = {
+                "namespace": exact_ns,
+                "error": error_msg,
+                "error_code": error_code,
+                "success": False
+            }
+        except Exception as e:
+            diagnostics["checks"]["exact_namespace"] = {
+                "namespace": exact_ns,
+                "error": str(e),
+                "success": False
+            }
+    
+    # Check 3: Semantic namespace
+    semantic_ns = f"/semantic/{sanitized_actor_id}"
+    try:
+        response = bedrock_client.list_memory_records(
+            memoryId=memory_client.memory_id,
+            namespace=semantic_ns,
+            maxResults=10
+        )
+        records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
+        for record in records:
+            if isinstance(record, dict) and 'namespace' not in record:
+                record['namespace'] = semantic_ns
+        
+        # Serialize records to handle datetime objects
+        serialized_records = [serialize_record(r) for r in records[:3]] if records else []
+        
+        diagnostics["checks"]["semantic_namespace"] = {
+            "namespace": semantic_ns,
+            "record_count": len(records),
+            "records": serialized_records,
+            "success": True
+        }
+    except ClientError as e:
+        error_code = e.response.get('Error', {}).get('Code', '')
+        error_msg = e.response.get('Error', {}).get('Message', '')
+        diagnostics["checks"]["semantic_namespace"] = {
+            "namespace": semantic_ns,
+            "error": error_msg,
+            "error_code": error_code,
+            "success": False
+        }
+    except Exception as e:
+        diagnostics["checks"]["semantic_namespace"] = {
+            "namespace": semantic_ns,
+            "error": str(e),
+            "success": False
+        }
+    
+    # Check 4: Preferences namespace
+    prefs_ns = f"/preferences/{sanitized_actor_id}"
+    try:
+        response = bedrock_client.list_memory_records(
+            memoryId=memory_client.memory_id,
+            namespace=prefs_ns,
+            maxResults=10
+        )
+        records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
+        for record in records:
+            if isinstance(record, dict) and 'namespace' not in record:
+                record['namespace'] = prefs_ns
+        
+        # Serialize records to handle datetime objects
+        serialized_records = [serialize_record(r) for r in records[:3]] if records else []
+        
+        diagnostics["checks"]["preferences_namespace"] = {
+            "namespace": prefs_ns,
+            "record_count": len(records),
+            "records": serialized_records,
+            "success": True
+        }
+    except ClientError as e:
+        error_code = e.response.get('Error', {}).get('Code', '')
+        error_msg = e.response.get('Error', {}).get('Message', '')
+        diagnostics["checks"]["preferences_namespace"] = {
+            "namespace": prefs_ns,
+            "error": error_msg,
+            "error_code": error_code,
+            "success": False
+        }
+    except Exception as e:
+        diagnostics["checks"]["preferences_namespace"] = {
+            "namespace": prefs_ns,
+            "error": str(e),
+            "success": False
+        }
+    
+    # Calculate total records
+    total_records = 0
+    for check in diagnostics["checks"].values():
+        if check.get("success") and "record_count" in check:
+            total_records += check["record_count"]
+    
+    diagnostics["total_records"] = total_records
+    
+    return JSONResponse(content=diagnostics)
 
 
 @app.get("/")

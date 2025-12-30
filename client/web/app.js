@@ -133,30 +133,66 @@ function showTab(tab) {
     }
 }
 
+// Accordion management
+function toggleAccordion(sectionId) {
+    const content = document.getElementById(sectionId);
+    const icon = document.getElementById(sectionId + 'Icon');
+    
+    if (content.style.display === 'none' || !content.style.display) {
+        content.style.display = 'block';
+        if (icon) icon.textContent = '▼';
+    } else {
+        content.style.display = 'none';
+        if (icon) icon.textContent = '▶';
+    }
+}
+
 // Memory API functions
 async function queryMemories() {
     const query = document.getElementById('memoryQuery').value;
+    const memoryTypeSelect = document.getElementById('memoryTypeSelect');
+    const memoryType = memoryTypeSelect ? memoryTypeSelect.value : 'all';
+    const namespaceInput = document.getElementById('namespaceInput');
+    const namespace = namespaceInput && namespaceInput.value.trim() ? namespaceInput.value.trim() : null;
+    
     if (!authToken) {
         alert('Please login first');
         return;
     }
     
+    const resultsDiv = document.getElementById('memoryResults');
+    resultsDiv.innerHTML = '<p>Searching...</p>';
+    
     try {
+        const requestBody = {
+            query: query || '',
+            top_k: 10
+        };
+        
+        // Add memory_type if not 'all'
+        if (memoryType && memoryType !== 'all') {
+            requestBody.memory_type = memoryType;
+        }
+        
+        // Add namespace if provided
+        if (namespace) {
+            requestBody.namespace = namespace;
+        }
+        
         const response = await fetch(`${API_BASE}/api/memory/query`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${authToken}`
             },
-            body: JSON.stringify({ query, top_k: 5 })
+            body: JSON.stringify(requestBody)
         });
         
         if (response.ok) {
             const data = await response.json();
-            const resultsDiv = document.getElementById('memoryResults');
-            resultsDiv.innerHTML = '<h4>Search Results:</h4>';
+            resultsDiv.innerHTML = `<h4>Search Results (${data.memories ? data.memories.length : 0} found):</h4>`;
             if (data.memories && data.memories.length > 0) {
-                data.memories.forEach(mem => {
+                data.memories.forEach((mem, index) => {
                     const memDiv = document.createElement('div');
                     memDiv.style.padding = '10px';
                     memDiv.style.margin = '5px 0';
@@ -164,16 +200,58 @@ async function queryMemories() {
                     memDiv.style.borderRadius = '5px';
                     memDiv.style.border = '1px solid #ddd';
                     
+                    const headerDiv = document.createElement('div');
+                    headerDiv.style.display = 'flex';
+                    headerDiv.style.justifyContent = 'space-between';
+                    headerDiv.style.alignItems = 'center';
+                    headerDiv.style.marginBottom = '5px';
+                    
                     const namespaceDiv = document.createElement('div');
                     namespaceDiv.style.fontSize = '12px';
                     namespaceDiv.style.color = '#666';
-                    namespaceDiv.style.marginBottom = '5px';
                     namespaceDiv.textContent = `Namespace: ${mem.namespace || 'N/A'}`;
-                    memDiv.appendChild(namespaceDiv);
+                    headerDiv.appendChild(namespaceDiv);
+                    
+                    const expandBtn = document.createElement('button');
+                    expandBtn.textContent = 'View Full';
+                    expandBtn.style.background = '#6c757d';
+                    expandBtn.style.color = 'white';
+                    expandBtn.style.border = 'none';
+                    expandBtn.style.padding = '3px 8px';
+                    expandBtn.style.borderRadius = '3px';
+                    expandBtn.style.cursor = 'pointer';
+                    expandBtn.style.fontSize = '11px';
+                    expandBtn.onclick = () => {
+                        const fullContent = document.getElementById(`fullContent_${index}`);
+                        if (fullContent.style.display === 'none') {
+                            fullContent.style.display = 'block';
+                            expandBtn.textContent = 'Hide Full';
+                        } else {
+                            fullContent.style.display = 'none';
+                            expandBtn.textContent = 'View Full';
+                        }
+                    };
+                    headerDiv.appendChild(expandBtn);
+                    
+                    memDiv.appendChild(headerDiv);
                     
                     const contentDiv = document.createElement('div');
-                    contentDiv.textContent = mem.content || JSON.stringify(mem);
+                    const contentText = mem.content || JSON.stringify(mem);
+                    const preview = contentText.length > 200 ? contentText.substring(0, 200) + '...' : contentText;
+                    contentDiv.textContent = preview;
                     memDiv.appendChild(contentDiv);
+                    
+                    const fullContent = document.createElement('div');
+                    fullContent.id = `fullContent_${index}`;
+                    fullContent.style.display = 'none';
+                    fullContent.style.marginTop = '10px';
+                    fullContent.style.padding = '10px';
+                    fullContent.style.background = '#f8f9fa';
+                    fullContent.style.borderRadius = '3px';
+                    fullContent.style.whiteSpace = 'pre-wrap';
+                    fullContent.style.fontSize = '12px';
+                    fullContent.textContent = contentText;
+                    memDiv.appendChild(fullContent);
                     
                     resultsDiv.appendChild(memDiv);
                 });
@@ -182,11 +260,11 @@ async function queryMemories() {
             }
         } else {
             const errorText = await response.text();
-            alert(`Error querying memories: ${errorText}`);
+            resultsDiv.innerHTML = `<p style="color: red;">Error querying memories: ${errorText}</p>`;
         }
     } catch (error) {
         console.error('Error querying memories:', error);
-        alert('Error querying memories: ' + error.message);
+        resultsDiv.innerHTML = `<p style="color: red;">Error querying memories: ${error.message}</p>`;
     }
 }
 
@@ -250,6 +328,9 @@ async function loadSessions() {
         return;
     }
     
+    const sessionsDiv = document.getElementById('sessions');
+    sessionsDiv.innerHTML = '<p>Loading sessions...</p>';
+    
     try {
         const response = await fetch(`${API_BASE}/api/memory/sessions`, {
             headers: {
@@ -259,8 +340,7 @@ async function loadSessions() {
         
         if (response.ok) {
             const data = await response.json();
-            const sessionsDiv = document.getElementById('sessions');
-            sessionsDiv.innerHTML = '<h4>Sessions:</h4>';
+            sessionsDiv.innerHTML = `<h4>Sessions (${data.sessions ? data.sessions.length : 0} found):</h4>`;
             if (data.sessions && data.sessions.length > 0) {
                 data.sessions.forEach(session => {
                     const sessionDiv = document.createElement('div');
@@ -270,7 +350,8 @@ async function loadSessions() {
                     sessionDiv.style.borderRadius = '5px';
                     sessionDiv.style.border = '1px solid #ddd';
                     
-                    const sessionId = session.session_id || session.id;
+                    // Extract session_id and summary - backend returns these fields
+                    const sessionId = session.session_id || session.id || 'Unknown';
                     const summary = session.summary || 'No summary available';
                     
                     const headerDiv = document.createElement('div');
@@ -310,11 +391,11 @@ async function loadSessions() {
             }
         } else {
             const errorText = await response.text();
-            alert(`Error loading sessions: ${errorText}`);
+            sessionsDiv.innerHTML = `<p style="color: red;">Error loading sessions: ${errorText}</p>`;
         }
     } catch (error) {
         console.error('Error loading sessions:', error);
-        alert('Error loading sessions: ' + error.message);
+        sessionsDiv.innerHTML = `<p style="color: red;">Error loading sessions: ${error.message}</p>`;
     }
 }
 
@@ -739,6 +820,155 @@ document.getElementById('memoryQuery').addEventListener('keypress', (e) => {
         queryMemories();
     }
 });
+
+// Allow Enter key in diagnostic session ID
+document.getElementById('diagnosticSessionId').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+        runDiagnostics();
+    }
+});
+
+// Diagnostic functions
+let lastDiagnosticData = null;
+
+async function runDiagnostics() {
+    if (!authToken) {
+        alert('Please login first');
+        return;
+    }
+    
+    const sessionId = document.getElementById('diagnosticSessionId').value.trim();
+    const resultsDiv = document.getElementById('diagnosticsResults');
+    resultsDiv.innerHTML = '<p class="loading">Running diagnostics...</p>';
+    
+    try {
+        const response = await fetch(`${API_BASE}/api/memory/diagnose`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${authToken}`
+            },
+            body: JSON.stringify({
+                session_id: sessionId || null
+            })
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            lastDiagnosticData = data;
+            displayDiagnostics(data);
+            document.getElementById('exportDiagnosticsBtn').style.display = 'inline-block';
+        } else {
+            const errorText = await response.text();
+            resultsDiv.innerHTML = `<p style="color: red;">Error running diagnostics: ${errorText}</p>`;
+        }
+    } catch (error) {
+        console.error('Error running diagnostics:', error);
+        resultsDiv.innerHTML = `<p style="color: red;">Error running diagnostics: ${error.message}</p>`;
+    }
+}
+
+function displayDiagnostics(data) {
+    const resultsDiv = document.getElementById('diagnosticsResults');
+    let html = '<div style="margin-bottom: 20px;">';
+    html += `<h4>Diagnostic Summary</h4>`;
+    html += `<p><strong>User ID:</strong> ${data.user_id} (sanitized: ${data.sanitized_user_id})</p>`;
+    html += `<p><strong>Memory ID:</strong> ${data.memory_id}</p>`;
+    html += `<p><strong>Region:</strong> ${data.region}</p>`;
+    if (data.session_id) {
+        html += `<p><strong>Session ID:</strong> ${data.session_id}</p>`;
+    }
+    html += `<p><strong>Total Records Found:</strong> ${data.total_records || 0}</p>`;
+    html += '</div>';
+    
+    // Display each check
+    const checks = data.checks || {};
+    
+    // Check 1: Parent namespace
+    if (checks.parent_namespace) {
+        const check = checks.parent_namespace;
+        html += createDiagnosticCheckHTML('Check 1: Parent Namespace', check, `/summaries/${data.sanitized_user_id}`);
+    }
+    
+    // Check 2: Exact session namespace
+    if (checks.exact_namespace) {
+        const check = checks.exact_namespace;
+        html += createDiagnosticCheckHTML('Check 2: Exact Session Namespace', check, check.namespace);
+    }
+    
+    // Check 3: Semantic namespace
+    if (checks.semantic_namespace) {
+        const check = checks.semantic_namespace;
+        html += createDiagnosticCheckHTML('Check 3: Semantic Namespace', check, `/semantic/${data.sanitized_user_id}`);
+    }
+    
+    // Check 4: Preferences namespace
+    if (checks.preferences_namespace) {
+        const check = checks.preferences_namespace;
+        html += createDiagnosticCheckHTML('Check 4: Preferences Namespace', check, `/preferences/${data.sanitized_user_id}`);
+    }
+    
+    resultsDiv.innerHTML = html;
+}
+
+function createDiagnosticCheckHTML(title, check, namespace) {
+    let html = `<div class="diagnostic-check ${check.success ? 'success' : 'error'}">`;
+    html += `<h5 style="margin-top: 0;">${title}</h5>`;
+    html += `<p><strong>Namespace:</strong> ${check.namespace || namespace}</p>`;
+    
+    if (check.success) {
+        html += `<p style="color: #28a745;"><strong>✅ Success:</strong> Found ${check.record_count || 0} record(s)</p>`;
+        
+        if (check.records && check.records.length > 0) {
+            html += `<button onclick="toggleExpandable('${title.replace(/\s+/g, '_')}_records')" style="background: #6c757d; color: white; border: none; padding: 5px 10px; border-radius: 3px; cursor: pointer; margin-top: 10px;">View Records</button>`;
+            html += `<div id="${title.replace(/\s+/g, '_')}_records" class="expandable-content">`;
+            check.records.forEach((record, index) => {
+                html += `<div style="margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 3px;">`;
+                html += `<p><strong>Record ${index + 1}:</strong></p>`;
+                html += `<p style="font-size: 12px; color: #666;">Record ID: ${record.memoryRecordId || record.recordId || 'N/A'}</p>`;
+                const content = record.content || {};
+                const text = content.text || '';
+                if (text) {
+                    const preview = text.length > 200 ? text.substring(0, 200) + '...' : text;
+                    html += `<p style="white-space: pre-wrap; font-size: 12px;">${preview}</p>`;
+                }
+                html += `</div>`;
+            });
+            html += `</div>`;
+        }
+    } else {
+        html += `<p style="color: #dc3545;"><strong>❌ Error:</strong> ${check.error || 'Unknown error'}</p>`;
+        if (check.error_code) {
+            html += `<p style="font-size: 12px; color: #666;">Error Code: ${check.error_code}</p>`;
+        }
+    }
+    
+    html += `</div>`;
+    return html;
+}
+
+function toggleExpandable(id) {
+    const element = document.getElementById(id);
+    if (element) {
+        element.classList.toggle('show');
+    }
+}
+
+function exportDiagnostics() {
+    if (!lastDiagnosticData) {
+        alert('No diagnostic data to export. Please run diagnostics first.');
+        return;
+    }
+    
+    const dataStr = JSON.stringify(lastDiagnosticData, null, 2);
+    const dataBlob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(dataBlob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `memory-diagnostics-${Date.now()}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+}
 
 // Initialize authentication on page load
 window.addEventListener('DOMContentLoaded', () => {

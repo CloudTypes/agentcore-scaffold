@@ -599,31 +599,112 @@ class MemoryClient:
                     
                     response = bedrock_client.list_memory_records(**params)
                     records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
-                    # Add namespace to each record (since it's not in the response)
+                    # IMPORTANT: Don't overwrite namespace - list_memory_records might return the actual namespace
+                    # Only set parent namespace if the field is completely missing
                     for record in records:
-                        if isinstance(record, dict) and 'namespace' not in record:
-                            record['namespace'] = namespace
+                        if isinstance(record, dict):
+                            # Preserve any existing namespace - don't overwrite it
+                            if 'namespace' not in record or not record.get('namespace'):
+                                # Only set parent namespace if truly missing
+                                record['namespace'] = namespace
+                            else:
+                                # Log if we found a namespace in the response
+                                logger.debug(f"Record {record.get('memoryRecordId', 'unknown')} has namespace: {record.get('namespace')}")
                     all_records.extend(records)
                     
                     next_token = response.get("nextToken")
                     if not next_token or len(records) == 0:
                         break
                 
-                # Extract unique session IDs from namespaces
+                # Extract unique session IDs from records
+                # When querying parent namespace, the API doesn't return the full namespace path
+                # We MUST use GetMemoryRecord to get the actual namespace for each record
                 seen_session_ids = set()
                 sessions = []
                 
-                for record in all_records:
-                    ns = record.get("namespace", "")
-                    # Namespace format: /summaries/{actorId}/{sessionId}
-                    parts = ns.split("/")
-                    if len(parts) >= 4 and parts[1] == "summaries":
-                        session_id = parts[-1]
-                        if session_id and session_id not in seen_session_ids:
+                logger.info(f"Found {len(all_records)} records in parent namespace, using GetMemoryRecord to extract session IDs")
+                # Temporarily enable debug logging for namespace extraction
+                original_level = logger.level
+                logger.setLevel(logging.DEBUG)
+                
+                # Use GetMemoryRecord to get the full namespace for each record
+                # This is necessary because list_memory_records doesn't return full namespace paths
+                # when querying a parent namespace
+                processed = 0
+                for record in all_records[:min(50, top_k * 5)]:  # Limit to avoid too many API calls
+                    record_id = record.get("memoryRecordId") or record.get("recordId")
+                    if not record_id:
+                        logger.debug(f"Record missing memoryRecordId, skipping")
+                        continue
+                    
+                    processed += 1
+                    try:
+                        get_response = bedrock_client.get_memory_record(
+                            memoryId=self.memory_id,
+                            memoryRecordId=record_id
+                        )
+                        
+                        full_record = get_response.get("memoryRecord", {})
+                        
+                        # GetMemoryRecord returns 'namespaces' (plural, array) not 'namespace' (singular)
+                        namespaces_list = full_record.get("namespaces", [])
+                        # Get the original namespace from list_memory_records (before we might have overwritten it)
+                        original_ns = record.get("namespace", "")
+                        
+                        logger.debug(f"Record {record_id}: namespaces array={namespaces_list}, original_ns={original_ns}, parent_ns={namespace}")
+                        
+                        # Try to get namespace from multiple sources, in order of preference:
+                        # 1. namespaces array from GetMemoryRecord (most reliable - contains full path)
+                        # 2. original namespace from list_memory_records (if it's a full path, not parent)
+                        # 3. other possible locations
+                        full_ns = ""
+                        if namespaces_list and len(namespaces_list) > 0:
+                            # Use the first namespace from the array
+                            full_ns = namespaces_list[0] if isinstance(namespaces_list[0], str) else str(namespaces_list[0])
+                            logger.info(f"Record {record_id}: Using namespace from 'namespaces' array: {full_ns}")
+                        elif original_ns and original_ns != namespace:
+                            # Use original namespace if it's different from parent (means it's a full path)
+                            full_ns = original_ns
+                            logger.info(f"Record {record_id}: Using original record namespace: {full_ns}")
+                        else:
+                            # Try other possible locations
+                            full_ns = (full_record.get("namespace") or 
+                                      full_record.get("namespacePath") or
+                                      get_response.get("namespace") or
+                                      "")
+                        
+                        logger.debug(f"Record {record_id}: Final namespace='{full_ns}'")
+                        
+                        if not full_ns:
+                            logger.warning(f"Record {record_id} has no namespace. namespaces={namespaces_list}, original_ns={original_ns}, parent_ns={namespace}")
+                            continue
+                        
+                        parts = full_ns.split("/")
+                        logger.debug(f"Record {record_id}: namespace parts={parts}, len={len(parts)}")
+                        
+                        if len(parts) >= 4 and parts[1] == "summaries":
+                            session_id = parts[-1]
+                            logger.debug(f"Record {record_id}: extracted session_id='{session_id}', sanitized_actor_id='{sanitized_actor_id}'")
+                            
+                            # Make sure it's actually a session ID (not the actor ID)
+                            # Session IDs are typically UUIDs, so check format
+                            if session_id == sanitized_actor_id:
+                                logger.debug(f"Record {record_id}: session_id matches actor_id, skipping")
+                                continue
+                            
+                            if session_id in seen_session_ids:
+                                logger.debug(f"Record {record_id}: session_id already seen, skipping")
+                                continue
+                            
+                            if len(session_id) <= 10:
+                                logger.debug(f"Record {record_id}: session_id too short ({len(session_id)}), likely not a UUID, skipping")
+                                continue
+                            
+                            # All checks passed, add the session
                             seen_session_ids.add(session_id)
                             
                             # Extract summary text
-                            content = record.get("content", {})
+                            content = full_record.get("content", {})
                             if isinstance(content, dict):
                                 text = content.get("text", "")
                             else:
@@ -634,12 +715,31 @@ class MemoryClient:
                                 "summary": text[:200] if text else "No summary available"
                             })
                             
+                            logger.info(f"Extracted session {session_id} from namespace {full_ns}")
+                            
                             if len(sessions) >= top_k:
                                 break
+                        else:
+                            logger.warning(f"Record {record_id} namespace '{full_ns}' doesn't match expected pattern. Expected: /summaries/{{actorId}}/{{sessionId}}, got {len(parts)} parts: {parts}")
+                    except Exception as e:
+                        logger.warning(f"Failed to get full record for {record_id}: {e}")
+                        continue
+                
+                # Restore original log level
+                logger.setLevel(original_level)
+                
+                logger.info(f"Processed {processed} records, found {len(sessions)} unique sessions")
                 
                 if sessions:
-                    logger.info(f"Found {len(sessions)} sessions using ListMemoryRecords")
+                    logger.info(f"Found {len(sessions)} sessions using ListMemoryRecords + GetMemoryRecord")
                     return sessions
+                else:
+                    logger.warning(f"No sessions extracted from {len(all_records)} records. This may indicate the records are not in session-specific namespaces.")
+                    # Log a sample record for debugging
+                    if all_records:
+                        sample = all_records[0]
+                        sample_id = sample.get("memoryRecordId") or sample.get("recordId", "N/A")
+                        logger.warning(f"Sample record ID: {sample_id}, keys: {list(sample.keys())}")
             except Exception as e:
                 logger.debug(f"ListMemoryRecords failed for namespace {namespace}: {e}")
                 # Fallback: try querying individual session namespaces
