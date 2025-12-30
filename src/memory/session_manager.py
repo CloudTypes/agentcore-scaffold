@@ -88,16 +88,19 @@ class MemorySessionManager:
         if not content:
             return
         
-        self.memory_client.store_event(
-            actor_id=self.actor_id,
-            session_id=self.session_id,
-            event_type="user_input",
-            payload={
-                "text": text,
-                "audio_transcript": audio_transcript,
-                "content": content
-            }
-        )
+        try:
+            self.memory_client.store_event(
+                actor_id=self.actor_id,
+                session_id=self.session_id,
+                event_type="user_input",
+                payload={
+                    "text": text,
+                    "audio_transcript": audio_transcript,
+                    "content": content
+                }
+            )
+        except Exception as e:
+            logger.error(f"Failed to store user input: {e}")
     
     def store_agent_response(self, text: Optional[str] = None, audio_transcript: Optional[str] = None) -> None:
         """
@@ -111,16 +114,19 @@ class MemorySessionManager:
         if not content:
             return
         
-        self.memory_client.store_event(
-            actor_id=self.actor_id,
-            session_id=self.session_id,
-            event_type="agent_response",
-            payload={
-                "text": text,
-                "audio_transcript": audio_transcript,
-                "content": content
-            }
-        )
+        try:
+            self.memory_client.store_event(
+                actor_id=self.actor_id,
+                session_id=self.session_id,
+                event_type="agent_response",
+                payload={
+                    "text": text,
+                    "audio_transcript": audio_transcript,
+                    "content": content
+                }
+            )
+        except Exception as e:
+            logger.error(f"Failed to store agent response: {e}")
     
     def store_tool_use(self, tool_name: str, input_data: Dict[str, Any], output_data: Dict[str, Any]) -> None:
         """
@@ -131,16 +137,19 @@ class MemorySessionManager:
             input_data: Tool input parameters
             output_data: Tool output/result
         """
-        self.memory_client.store_event(
-            actor_id=self.actor_id,
-            session_id=self.session_id,
-            event_type="tool_use",
-            payload={
-                "tool_name": tool_name,
-                "input": input_data,
-                "output": output_data
-            }
-        )
+        try:
+            self.memory_client.store_event(
+                actor_id=self.actor_id,
+                session_id=self.session_id,
+                event_type="tool_use",
+                payload={
+                    "tool_name": tool_name,
+                    "input": input_data,
+                    "output": output_data
+                }
+            )
+        except Exception as e:
+            logger.error(f"Failed to store tool use: {e}")
     
     async def finalize(self) -> None:
         """Finalize the session and store session end event."""

@@ -8,10 +8,19 @@ import base64
 import sys
 import os
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
 import uvicorn
 from threading import Thread
+
+# Load .env file from project root if it exists
+# This ensures integration tests use the same configuration as the application
+project_root = Path(__file__).parent.parent.parent
+env_file = project_root / '.env'
+if env_file.exists():
+    from dotenv import load_dotenv
+    load_dotenv(env_file, override=False)  # Don't override existing env vars
 
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
@@ -125,17 +134,91 @@ def mock_nova_sonic_responses():
 
 @pytest.fixture
 def mock_env_vars(monkeypatch):
-    """Set up environment variables for integration tests."""
-    env_vars = {
-        "AWS_REGION": "us-east-1",
+    """
+    Load environment variables from .env file for integration tests, with test-specific overrides.
+    
+    This fixture loads values from .env file (if it exists) and applies
+    test-specific overrides. This ensures integration tests use the same configuration
+    as the application while allowing test-specific values where needed.
+    """
+    # Test-specific overrides (values that should always be test values)
+    test_overrides = {
+        "WEATHER_API_KEY": "test_api_key_12345",  # Always use test API key
+        "AGENTCORE_MEMORY_ID": "test-memory-id",  # Use test memory ID
+        "MEMORY_ENABLED": "true",  # Enable memory for integration tests
+    }
+    
+    # Environment variables to load from .env or use defaults
+    env_vars = {}
+    
+    # Keys that should come from .env if available
+    env_keys = [
+        "AWS_REGION",
+        "AGENTCORE_MEMORY_REGION",
+        "MODEL_ID",
+        "VOICE",
+        "INPUT_SAMPLE_RATE",
+        "OUTPUT_SAMPLE_RATE",
+        "SYSTEM_PROMPT",
+    ]
+    
+    # Default values (used if not in .env and not in test_overrides)
+    defaults = {
+        "AWS_REGION": "us-west-2",
+        "AGENTCORE_MEMORY_REGION": "us-west-2",
         "MODEL_ID": "amazon.nova-sonic-v1:0",
         "VOICE": "matthew",
         "INPUT_SAMPLE_RATE": "16000",
         "OUTPUT_SAMPLE_RATE": "24000",
-        "WEATHER_API_KEY": "test_api_key_12345",
-        "SYSTEM_PROMPT": "You are a helpful voice assistant."
+        "SYSTEM_PROMPT": "You are a helpful voice assistant.",
     }
-    for key, value in env_vars.items():
+    
+    # Load values: .env > test_overrides > defaults
+    for key in env_keys:
+        value = os.getenv(key) or test_overrides.get(key) or defaults.get(key)
+        if value:
+            env_vars[key] = value
+            monkeypatch.setenv(key, value)
+    
+    # Apply test overrides (these always override .env values)
+    for key, value in test_overrides.items():
+        env_vars[key] = value
         monkeypatch.setenv(key, value)
+    
     return env_vars
+
+
+@pytest.fixture
+def mock_memory_client_integration():
+    """Mock MemoryClient for integration tests."""
+    from memory.client import MemoryClient
+    
+    client = MagicMock(spec=MemoryClient)
+    client.memory_id = "test-memory-id"
+    # Use region from .env file or default
+    client.region = os.getenv("AGENTCORE_MEMORY_REGION") or os.getenv("AWS_REGION", "us-west-2")
+    client.retrieve_memories = MagicMock(return_value=[])
+    client.get_user_preferences = MagicMock(return_value=[])
+    client.store_event = MagicMock()
+    client.get_session_summary = MagicMock(return_value=None)
+    client.list_sessions = MagicMock(return_value=[])
+    return client
+
+
+@pytest.fixture
+def sample_memory_records_integration():
+    """Sample memory records for integration tests."""
+    mock_record1 = MagicMock()
+    mock_record1.content = "Past conversation about weather in Denver"
+    mock_record2 = MagicMock()
+    mock_record2.content = "User asked about calculations"
+    return [mock_record1, mock_record2]
+
+
+@pytest.fixture
+def sample_preferences_integration():
+    """Sample user preferences for integration tests."""
+    mock_pref = MagicMock()
+    mock_pref.content = "User prefers concise responses"
+    return [mock_pref]
 
