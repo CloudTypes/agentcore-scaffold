@@ -87,24 +87,75 @@
     <div class="container">
         <h1>🎙️ AgentCore Voice Agent Test Client</h1>
         
+        <!-- Authentication Section -->
+        <div id="authSection" style="margin-bottom: 20px;">
+            <div id="loginSection" style="text-align: center; padding: 20px;">
+                <button onclick="login()" style="background: #4285f4; padding: 12px 24px; font-size: 16px;">
+                    🔐 Sign in with Google
+                </button>
+            </div>
+            <div id="userSection" style="display: none; padding: 15px; background: #e8f5e9; border-radius: 5px; margin-bottom: 20px;">
+                <div style="display: flex; align-items: center; justify-content: space-between;">
+                    <div style="display: flex; align-items: center;">
+                        <img id="userPicture" src="" alt="Profile" style="width: 40px; height: 40px; border-radius: 50%; margin-right: 10px;">
+                        <div>
+                            <div id="userName" style="font-weight: bold;"></div>
+                            <div id="userEmail" style="font-size: 12px; color: #666;"></div>
+                        </div>
+                    </div>
+                    <button onclick="logout()" style="background: #dc3545; padding: 8px 16px; font-size: 14px;">Logout</button>
+                </div>
+            </div>
+        </div>
+        
         <div id="status" class="status disconnected">
             Status: Disconnected
         </div>
         
         <div class="controls">
-            <button id="connectBtn" onclick="connect()">Connect</button>
+            <button id="connectBtn" onclick="connect()" disabled>Connect</button>
             <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
             <button id="muteBtn" onclick="toggleMute()" disabled style="background: #28a745;">🔊 Unmuted</button>
         </div>
         
-        <div class="messages" id="messages"></div>
+        <!-- Tabs for Chat and Memory -->
+        <div style="margin: 20px 0;">
+            <button id="chatTab" onclick="showTab('chat')" style="background: #007bff; margin-right: 5px;">💬 Chat</button>
+            <button id="memoryTab" onclick="showTab('memory')" style="background: #6c757d;">🧠 Memory</button>
+        </div>
         
-        <div class="controls">
-            <input type="text" id="textInput" placeholder="Type a message (for testing)" style="width: 70%; padding: 10px;">
-            <button onclick="sendText()" id="sendTextBtn" disabled>Send Text</button>
+        <!-- Chat Tab -->
+        <div id="chatContent">
+            <div class="messages" id="messages"></div>
+            
+            <div class="controls">
+                <input type="text" id="textInput" placeholder="Type a message (for testing)" style="width: 70%; padding: 10px;">
+                <button onclick="sendText()" id="sendTextBtn" disabled>Send Text</button>
+            </div>
+        </div>
+        
+        <!-- Memory Tab -->
+        <div id="memoryContent" style="display: none;">
+            <div style="margin-bottom: 20px;">
+                <h3>Memory Search</h3>
+                <input type="text" id="memoryQuery" placeholder="Search memories..." style="width: 70%; padding: 10px; margin-right: 10px;">
+                <button onclick="queryMemories()" style="background: #28a745;">Search</button>
+            </div>
+            
+            <div style="margin-bottom: 20px;">
+                <h3>User Preferences</h3>
+                <button onclick="loadPreferences()" style="background: #17a2b8;">Load Preferences</button>
+                <div id="preferences" style="margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 5px;"></div>
+            </div>
+            
+            <div>
+                <h3>Sessions</h3>
+                <button onclick="loadSessions()" style="background: #17a2b8;">Load Sessions</button>
+                <div id="sessions" style="margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 5px;"></div>
+            </div>
         </div>
     </div>
 
-    <script src="app.js"></script>
+    <script src="/static/app.js"></script>
 </body>
 </html>

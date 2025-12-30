@@ -20,6 +20,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ ./src/
 COPY .env.example .env
 
+# Copy config module
+COPY src/config/ ./src/config/
+
 # Expose port 8080 (required by AgentCore Runtime)
 EXPOSE 8080
 

@@ -6,9 +6,11 @@ Main application with WebSocket endpoint for real-time voice conversations
 import os
 import asyncio
 import logging
-from typing import AsyncIterator, Dict, Any, Awaitable
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from pathlib import Path
+from typing import AsyncIterator, Dict, Any, Awaitable, Optional
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Depends, HTTPException, status
+from fastapi.responses import JSONResponse, RedirectResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from strands.experimental.bidi.agent import BidiAgent
 from strands.experimental.bidi.models.nova_sonic import BidiNovaSonicModel
 from strands.experimental.bidi.types.io import BidiInput, BidiOutput
@@ -31,6 +33,21 @@ from tools.calculator import calculator
 from tools.weather import weather_api
 from tools.database import database_query
 
+# Import memory and auth modules
+try:
+    from .memory.client import MemoryClient
+    from .memory.session_manager import MemorySessionManager
+    from .auth.google_oauth2 import GoogleOAuth2Handler
+    from .auth.oauth2_middleware import get_current_user
+    from .config.runtime import get_config
+except ImportError:
+    # Fallback for direct execution
+    from memory.client import MemoryClient
+    from memory.session_manager import MemorySessionManager
+    from auth.google_oauth2 import GoogleOAuth2Handler
+    from auth.oauth2_middleware import get_current_user
+    from config.runtime import get_config
+
 # Load environment variables
 load_dotenv()
 
@@ -51,13 +68,49 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Get the project root directory (assuming src/agent.py is in src/)
+project_root = Path(__file__).parent.parent
+client_web_path = project_root / "client" / "web"
+
+# Serve static files (JS, CSS) from client/web directory
+if client_web_path.exists():
+    app.mount("/static", StaticFiles(directory=str(client_web_path)), name="static")
+    logger.info(f"Serving static files from: {client_web_path}")
+else:
+    logger.warning(f"Frontend directory not found at: {client_web_path}")
+
 # Configuration
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-MODEL_ID = os.getenv("MODEL_ID", "amazon.nova-sonic-v1:0")
-VOICE = os.getenv("VOICE", "matthew")
-INPUT_SAMPLE_RATE = int(os.getenv("INPUT_SAMPLE_RATE", "16000"))
-OUTPUT_SAMPLE_RATE = int(os.getenv("OUTPUT_SAMPLE_RATE", "24000"))
-SYSTEM_PROMPT = os.getenv(
+config = get_config()
+AWS_REGION = config.get_config_value("AWS_REGION", "us-east-1")
+MODEL_ID = config.get_config_value("MODEL_ID", "amazon.nova-sonic-v1:0")
+VOICE = config.get_config_value("VOICE", "matthew")
+INPUT_SAMPLE_RATE = int(config.get_config_value("INPUT_SAMPLE_RATE", "16000"))
+OUTPUT_SAMPLE_RATE = int(config.get_config_value("OUTPUT_SAMPLE_RATE", "24000"))
+MEMORY_ENABLED = config.get_config_value("MEMORY_ENABLED", "false").lower() == "true"
+
+# Initialize memory client if enabled
+memory_client: Optional[MemoryClient] = None
+if MEMORY_ENABLED:
+    try:
+        memory_region = config.get_config_value("AGENTCORE_MEMORY_REGION", AWS_REGION)
+        memory_id = config.get_config_value("AGENTCORE_MEMORY_ID")
+        memory_client = MemoryClient(region=memory_region, memory_id=memory_id)
+        # Create memory resource if needed
+        memory_client.create_memory_resource()
+        logger.info("Memory client initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize memory client: {e}")
+        memory_client = None
+
+# Initialize OAuth2 handler
+oauth2_handler: Optional[GoogleOAuth2Handler] = None
+try:
+    oauth2_handler = GoogleOAuth2Handler()
+    logger.info("OAuth2 handler initialized")
+except Exception as e:
+    logger.warning(f"OAuth2 handler not initialized: {e}")
+
+SYSTEM_PROMPT = config.get_config_value(
     "SYSTEM_PROMPT",
     "You are a helpful voice assistant with access to calculator, weather, and database tools. "
     "Provide clear, concise responses and use tools when appropriate."
@@ -79,12 +132,13 @@ def create_nova_sonic_model() -> BidiNovaSonicModel:
     )
 
 
-def create_agent(model: BidiNovaSonicModel) -> BidiAgent:
+def create_agent(model: BidiNovaSonicModel, system_prompt: Optional[str] = None) -> BidiAgent:
     """Create Strands BidiAgent with tools and system prompt."""
+    prompt = system_prompt or SYSTEM_PROMPT
     return BidiAgent(
         model=model,
         tools=[calculator, weather_api, database_query],
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=prompt,
     )
 
 
@@ -96,10 +150,12 @@ class WebSocketOutput:
     into WebSocket messages that the client can process.
     """
     
-    def __init__(self, websocket: WebSocket):
+    def __init__(self, websocket: WebSocket, session_manager: Optional[MemorySessionManager] = None):
         self.websocket = websocket
+        self.session_manager = session_manager
         self._stopped = False
         self._event_count = 0
+        self._current_transcript = ""
     
     async def start(self, agent: BidiAgent) -> None:
         """Start the output handler."""
@@ -148,6 +204,13 @@ class WebSocketOutput:
                         "role": role
                     })
                     logger.info(f"Sent final transcript ({role}): {event.text}")
+                    
+                    # Store in memory if session manager is available
+                    if self.session_manager:
+                        if role == 'assistant':
+                            self.session_manager.store_agent_response(audio_transcript=event.text)
+                        elif role == 'user':
+                            self.session_manager.store_user_input(audio_transcript=event.text)
                 else:
                     # Log incremental updates at debug level but don't send to client
                     logger.debug(f"Incremental transcript ({role}): {event.text}")
@@ -181,12 +244,25 @@ class WebSocketOutput:
                     "type": "connection_close"
                 })
             elif isinstance(event, ToolUseStreamEvent):
-                logger.info(f"Tool use: {getattr(event, 'tool_name', 'unknown')}")
+                tool_name = getattr(event, 'tool_name', 'unknown')
+                tool_content = str(getattr(event, 'content', ''))[:200]
+                logger.info(f"Tool use: {tool_name}")
                 await self.websocket.send_json({
                     "type": "tool_use",
-                    "tool": getattr(event, 'tool_name', 'unknown'),
-                    "data": str(getattr(event, 'content', ''))[:200]  # Limit size
+                    "tool": tool_name,
+                    "data": tool_content
                 })
+                
+                # Store tool use in memory if session manager is available
+                if self.session_manager:
+                    # Try to extract input/output from event
+                    input_data = getattr(event, 'input', {})
+                    output_data = {"content": tool_content}
+                    self.session_manager.store_tool_use(
+                        tool_name=tool_name,
+                        input_data=input_data,
+                        output_data=output_data
+                    )
             else:
                 # Log unhandled event types at debug level
                 event_type = type(event).__name__
@@ -207,8 +283,9 @@ class WebSocketInput:
     into BidiInputEvent objects that the agent can process.
     """
     
-    def __init__(self, websocket: WebSocket):
+    def __init__(self, websocket: WebSocket, session_manager: Optional[MemorySessionManager] = None):
         self.websocket = websocket
+        self.session_manager = session_manager
         self._stopped = False
     
     async def start(self, agent: BidiAgent) -> None:
@@ -267,8 +344,14 @@ class WebSocketInput:
                 
                 return audio_event
             elif "text" in data:
-                logger.info(f"Received text: {data['text']}")
-                return BidiTextInputEvent(text=data["text"])
+                text = data["text"]
+                logger.info(f"Received text: {text}")
+                
+                # Store user input in memory if session manager is available
+                if self.session_manager:
+                    self.session_manager.store_user_input(text=text)
+                
+                return BidiTextInputEvent(text=text)
             else:
                 logger.warning(f"Received unknown data format: {data.keys()}")
                 # Default to text if format is unknown
@@ -292,23 +375,58 @@ async def websocket_endpoint(websocket: WebSocket):
     
     This endpoint:
     - Accepts WebSocket connections on port 8080 at /ws
+    - Requires authentication via JWT token in query parameter
     - Creates a Nova Sonic model and BidiAgent
     - Streams audio input/output in real-time
     - Handles interruptions and context changes
+    - Integrates with memory for context-aware responses
     """
+    # Get token from query parameters
+    token = websocket.query_params.get("token")
+    user_info = None
+    
+    # Authenticate if OAuth2 is enabled
+    if oauth2_handler:
+        if not token:
+            await websocket.close(code=1008, reason="Authentication required")
+            return
+        
+        try:
+            user_info = oauth2_handler.verify_token(token)
+        except ValueError as e:
+            logger.warning(f"Invalid token: {e}")
+            await websocket.close(code=1008, reason="Invalid token")
+            return
+    
     await websocket.accept()
     logger.info("WebSocket connection established")
+    
+    # Initialize memory session manager if memory is enabled
+    session_manager: Optional[MemorySessionManager] = None
+    if memory_client and user_info:
+        actor_id = user_info.get("email", "anonymous")
+        session_manager = MemorySessionManager(memory_client, actor_id=actor_id)
+        await session_manager.initialize()
+        
+        # Get memory context and update system prompt
+        memory_context = session_manager.get_context()
+        if memory_context:
+            system_prompt = f"{SYSTEM_PROMPT}\n\n{memory_context}"
+        else:
+            system_prompt = SYSTEM_PROMPT
+    else:
+        system_prompt = SYSTEM_PROMPT
     
     try:
         # Create model and agent for this session
         model = create_nova_sonic_model()
-        agent = create_agent(model)
+        agent = create_agent(model, system_prompt=system_prompt)
         
         logger.info("Starting bi-directional streaming session")
         
         # Create BidiInput and BidiOutput implementations for WebSocket
-        ws_input = WebSocketInput(websocket)
-        ws_output = WebSocketOutput(websocket)
+        ws_input = WebSocketInput(websocket, session_manager=session_manager)
+        ws_output = WebSocketOutput(websocket, session_manager=session_manager)
         
         # Start the input and output handlers
         await ws_input.start(agent)
@@ -380,6 +498,9 @@ async def websocket_endpoint(websocket: WebSocket):
             # WebSocket already closed, ignore
             pass
     finally:
+        # Finalize memory session
+        if session_manager:
+            await session_manager.finalize()
         logger.info("WebSocket session ended")
 
 
@@ -400,19 +521,236 @@ async def health_check():
     )
 
 
+# Authentication endpoints
+@app.get("/api/auth/login")
+async def login(request: Request):
+    """Initiate Google OAuth2 login."""
+    if not oauth2_handler:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="OAuth2 not configured"
+        )
+    
+    state = request.query_params.get("state")
+    auth_url, state_value = oauth2_handler.get_authorization_url(state=state)
+    return RedirectResponse(url=auth_url)
+
+
+@app.get("/api/auth/callback")
+async def auth_callback(request: Request, code: str, state: Optional[str] = None):
+    """Handle OAuth2 callback."""
+    if not oauth2_handler:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="OAuth2 not configured"
+        )
+    
+    try:
+        result = await oauth2_handler.handle_callback(code=code, state=state)
+        # Redirect to frontend with token
+        # In production, use httpOnly cookie instead
+        redirect_url = f"/?token={result['token']}"
+        return RedirectResponse(url=redirect_url)
+    except ValueError as e:
+        logger.error(f"OAuth2 callback error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e)
+        )
+
+
+@app.get("/api/auth/me")
+async def get_me(request: Request, user: Dict[str, Any] = Depends(get_current_user)):
+    """Get current user information."""
+    return JSONResponse(content=user)
+
+
+@app.post("/api/auth/logout")
+async def logout():
+    """Logout endpoint (client should clear token)."""
+    return JSONResponse(content={"message": "Logged out"})
+
+
+# Memory API endpoints
+@app.post("/api/memory/query")
+async def query_memories(
+    request: Request,
+    query: Dict[str, Any],
+    user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Query memories for current user."""
+    if not memory_client:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Memory not enabled"
+        )
+    
+    actor_id = user.get("email")
+    query_text = query.get("query", "")
+    
+    memories = memory_client.retrieve_memories(
+        actor_id=actor_id,
+        query=query_text if query_text else None,
+        top_k=query.get("top_k", 5)
+    )
+    
+    return JSONResponse(content={
+        "memories": [
+            {
+                "content": getattr(m, "content", str(m)),
+                "namespace": getattr(m, "namespace", ""),
+            }
+            for m in memories
+        ]
+    })
+
+
+@app.get("/api/memory/sessions")
+async def list_sessions(user: Dict[str, Any] = Depends(get_current_user)):
+    """List user's sessions."""
+    if not memory_client:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Memory not enabled"
+        )
+    
+    actor_id = user.get("email")
+    sessions = memory_client.list_sessions(actor_id=actor_id)
+    
+    return JSONResponse(content={"sessions": sessions})
+
+
+@app.get("/api/memory/sessions/{session_id}")
+async def get_session(session_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+    """Get session details and summary."""
+    if not memory_client:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Memory not enabled"
+        )
+    
+    actor_id = user.get("email")
+    summary = memory_client.get_session_summary(actor_id=actor_id, session_id=session_id)
+    
+    return JSONResponse(content={
+        "session_id": session_id,
+        "summary": summary
+    })
+
+
+@app.delete("/api/memory/sessions/{session_id}")
+async def delete_session(session_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+    """Delete a session's memories."""
+    # This would require additional implementation
+    return JSONResponse(content={"message": "Session deleted"})
+
+
+@app.get("/api/memory/preferences")
+async def get_preferences(user: Dict[str, Any] = Depends(get_current_user)):
+    """Get user preferences."""
+    if not memory_client:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Memory not enabled"
+        )
+    
+    actor_id = user.get("email")
+    preferences = memory_client.get_user_preferences(actor_id=actor_id)
+    
+    # Format preferences for frontend
+    formatted_prefs = []
+    for p in preferences:
+        if isinstance(p, dict):
+            # Memory record is a dictionary
+            content = p.get("content", {})
+            if isinstance(content, dict):
+                text = content.get("text", "")
+            else:
+                text = str(content) if content else ""
+            
+            formatted_prefs.append({
+                "content": text,
+                "namespace": p.get("namespace", "")
+            })
+        else:
+            # Fallback for object-like records
+            content_attr = getattr(p, "content", None)
+            if content_attr and hasattr(content_attr, "get"):
+                text = content_attr.get("text", "")
+            elif content_attr:
+                text = str(content_attr)
+            else:
+                text = str(p)
+            
+            formatted_prefs.append({
+                "content": text,
+                "namespace": getattr(p, "namespace", "")
+            })
+    
+    return JSONResponse(content={"preferences": formatted_prefs})
+
+
 @app.get("/")
 async def root():
-    """Root endpoint with service information."""
+    """Serve the frontend HTML file or return API information."""
+    index_path = client_web_path / "index.html"
+    if index_path.exists():
+        return FileResponse(str(index_path))
+    
+    # Fallback to API info if frontend not found
     return JSONResponse(
         content={
             "service": "AgentCore Voice Agent",
             "description": "Bi-directional streaming voice agent with Amazon Nova Sonic",
             "endpoints": {
                 "websocket": "/ws",
-                "health": "/ping"
+                "health": "/ping",
+                "auth": {
+                    "login": "/api/auth/login",
+                    "callback": "/api/auth/callback",
+                    "me": "/api/auth/me",
+                    "logout": "/api/auth/logout"
+                },
+                "memory": {
+                    "query": "/api/memory/query",
+                    "sessions": "/api/memory/sessions",
+                    "preferences": "/api/memory/preferences"
+                }
             },
             "model": MODEL_ID,
-            "region": AWS_REGION
+            "region": AWS_REGION,
+            "memory_enabled": MEMORY_ENABLED,
+            "auth_enabled": oauth2_handler is not None
+        }
+    )
+
+
+@app.get("/api")
+async def api_info():
+    """API information endpoint."""
+    return JSONResponse(
+        content={
+            "service": "AgentCore Voice Agent",
+            "description": "Bi-directional streaming voice agent with Amazon Nova Sonic",
+            "endpoints": {
+                "websocket": "/ws",
+                "health": "/ping",
+                "auth": {
+                    "login": "/api/auth/login",
+                    "callback": "/api/auth/callback",
+                    "me": "/api/auth/me",
+                    "logout": "/api/auth/logout"
+                },
+                "memory": {
+                    "query": "/api/memory/query",
+                    "sessions": "/api/memory/sessions",
+                    "preferences": "/api/memory/preferences"
+                }
+            },
+            "model": MODEL_ID,
+            "region": AWS_REGION,
+            "memory_enabled": MEMORY_ENABLED,
+            "auth_enabled": oauth2_handler is not None
         }
     )
 

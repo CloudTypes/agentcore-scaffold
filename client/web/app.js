@@ -12,6 +12,18 @@ let isPlayingAudio = false;
 let lastUserMessage = null;
 let lastAgentMessage = null;
 
+// Authentication state
+let authToken = null;
+let currentUser = null;
+// Determine API base URL - handle file:// protocol for local HTML files
+const getApiBase = () => {
+    if (window.location.protocol === 'file:' || !window.location.origin || window.location.origin === 'null') {
+        return 'http://localhost:8080';
+    }
+    return window.location.origin;
+};
+const API_BASE = getApiBase();
+
 const statusEl = document.getElementById('status');
 const messagesEl = document.getElementById('messages');
 const connectBtn = document.getElementById('connectBtn');
@@ -20,9 +32,240 @@ const muteBtn = document.getElementById('muteBtn');
 const sendTextBtn = document.getElementById('sendTextBtn');
 const textInput = document.getElementById('textInput');
 
+// Authentication functions
+async function login() {
+    window.location.href = `${API_BASE}/api/auth/login`;
+}
+
+async function logout() {
+    authToken = null;
+    currentUser = null;
+    localStorage.removeItem('authToken');
+    updateAuthUI();
+    if (websocket) {
+        disconnect();
+    }
+}
+
+async function checkAuth() {
+    // Check for token in URL (from OAuth callback)
+    const urlParams = new URLSearchParams(window.location.search);
+    const token = urlParams.get('token');
+    if (token) {
+        authToken = token;
+        localStorage.setItem('authToken', token);
+        // Remove token from URL
+        window.history.replaceState({}, document.title, window.location.pathname);
+        await loadUserInfo();
+    } else {
+        // Try to load from localStorage
+        authToken = localStorage.getItem('authToken');
+        if (authToken) {
+            await loadUserInfo();
+        }
+    }
+    updateAuthUI();
+}
+
+async function loadUserInfo() {
+    if (!authToken) return;
+    
+    try {
+        const response = await fetch(`${API_BASE}/api/auth/me`, {
+            headers: {
+                'Authorization': `Bearer ${authToken}`
+            }
+        });
+        
+        if (response.ok) {
+            currentUser = await response.json();
+        } else {
+            // Token invalid, clear it
+            authToken = null;
+            localStorage.removeItem('authToken');
+            currentUser = null;
+        }
+    } catch (error) {
+        console.error('Error loading user info:', error);
+        authToken = null;
+        localStorage.removeItem('authToken');
+        currentUser = null;
+    }
+}
+
+function updateAuthUI() {
+    const loginSection = document.getElementById('loginSection');
+    const userSection = document.getElementById('userSection');
+    
+    if (currentUser && authToken) {
+        loginSection.style.display = 'none';
+        userSection.style.display = 'block';
+        document.getElementById('userName').textContent = currentUser.name || currentUser.email;
+        document.getElementById('userEmail').textContent = currentUser.email;
+        if (currentUser.picture) {
+            document.getElementById('userPicture').src = currentUser.picture;
+        }
+        connectBtn.disabled = false;
+    } else {
+        loginSection.style.display = 'block';
+        userSection.style.display = 'none';
+        connectBtn.disabled = true;
+    }
+}
+
+// Tab management
+function showTab(tab) {
+    const chatContent = document.getElementById('chatContent');
+    const memoryContent = document.getElementById('memoryContent');
+    const chatTab = document.getElementById('chatTab');
+    const memoryTab = document.getElementById('memoryTab');
+    
+    if (tab === 'chat') {
+        chatContent.style.display = 'block';
+        memoryContent.style.display = 'none';
+        chatTab.style.background = '#007bff';
+        memoryTab.style.background = '#6c757d';
+    } else {
+        chatContent.style.display = 'none';
+        memoryContent.style.display = 'block';
+        chatTab.style.background = '#6c757d';
+        memoryTab.style.background = '#007bff';
+    }
+}
+
+// Memory API functions
+async function queryMemories() {
+    const query = document.getElementById('memoryQuery').value;
+    if (!authToken) {
+        alert('Please login first');
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_BASE}/api/memory/query`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${authToken}`
+            },
+            body: JSON.stringify({ query, top_k: 5 })
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            const resultsDiv = document.getElementById('preferences');
+            resultsDiv.innerHTML = '<h4>Search Results:</h4>';
+            if (data.memories && data.memories.length > 0) {
+                data.memories.forEach(mem => {
+                    const memDiv = document.createElement('div');
+                    memDiv.style.padding = '10px';
+                    memDiv.style.margin = '5px 0';
+                    memDiv.style.background = 'white';
+                    memDiv.style.borderRadius = '5px';
+                    memDiv.textContent = mem.content || JSON.stringify(mem);
+                    resultsDiv.appendChild(memDiv);
+                });
+            } else {
+                resultsDiv.innerHTML += '<p>No memories found.</p>';
+            }
+        } else {
+            alert('Error querying memories');
+        }
+    } catch (error) {
+        console.error('Error querying memories:', error);
+        alert('Error querying memories');
+    }
+}
+
+async function loadPreferences() {
+    if (!authToken) {
+        alert('Please login first');
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_BASE}/api/memory/preferences`, {
+            headers: {
+                'Authorization': `Bearer ${authToken}`
+            }
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            const prefsDiv = document.getElementById('preferences');
+            prefsDiv.innerHTML = '<h4>User Preferences:</h4>';
+            if (data.preferences && data.preferences.length > 0) {
+                data.preferences.forEach(pref => {
+                    const prefDiv = document.createElement('div');
+                    prefDiv.style.padding = '10px';
+                    prefDiv.style.margin = '5px 0';
+                    prefDiv.style.background = 'white';
+                    prefDiv.style.borderRadius = '5px';
+                    prefDiv.textContent = pref.content || JSON.stringify(pref);
+                    prefsDiv.appendChild(prefDiv);
+                });
+            } else {
+                prefsDiv.innerHTML += '<p>No preferences found.</p>';
+            }
+        } else {
+            alert('Error loading preferences');
+        }
+    } catch (error) {
+        console.error('Error loading preferences:', error);
+        alert('Error loading preferences');
+    }
+}
+
+async function loadSessions() {
+    if (!authToken) {
+        alert('Please login first');
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${API_BASE}/api/memory/sessions`, {
+            headers: {
+                'Authorization': `Bearer ${authToken}`
+            }
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            const sessionsDiv = document.getElementById('sessions');
+            sessionsDiv.innerHTML = '<h4>Sessions:</h4>';
+            if (data.sessions && data.sessions.length > 0) {
+                data.sessions.forEach(session => {
+                    const sessionDiv = document.createElement('div');
+                    sessionDiv.style.padding = '10px';
+                    sessionDiv.style.margin = '5px 0';
+                    sessionDiv.style.background = 'white';
+                    sessionDiv.style.borderRadius = '5px';
+                    sessionDiv.textContent = `Session: ${session.session_id || session.id}`;
+                    sessionsDiv.appendChild(sessionDiv);
+                });
+            } else {
+                sessionsDiv.innerHTML += '<p>No sessions found.</p>';
+            }
+        } else {
+            alert('Error loading sessions');
+        }
+    } catch (error) {
+        console.error('Error loading sessions:', error);
+        alert('Error loading sessions');
+    }
+}
+
 // WebSocket connection
 function connect() {
-    const wsUrl = 'ws://localhost:8080/ws';
+    if (!authToken) {
+        alert('Please login first');
+        return;
+    }
+    
+    // Convert HTTP URL to WebSocket URL
+    const wsProtocol = API_BASE.startsWith('https') ? 'wss:' : 'ws:';
+    const wsHost = API_BASE.replace(/^https?:/, '').replace(/^\/\//, '');
+    const wsUrl = `${wsProtocol}//${wsHost}/ws?token=${encodeURIComponent(authToken)}`;
     
     websocket = new WebSocket(wsUrl);
     
@@ -370,4 +613,16 @@ textInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') {
         sendText();
     }
+});
+
+// Allow Enter key in memory query
+document.getElementById('memoryQuery').addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+        queryMemories();
+    }
+});
+
+// Initialize authentication on page load
+window.addEventListener('DOMContentLoaded', () => {
+    checkAuth();
 });

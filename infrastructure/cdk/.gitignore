@@ -1,0 +1,11 @@
+*.pyc
+__pycache__/
+cdk.out/
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.env
+.DS_Store
+
