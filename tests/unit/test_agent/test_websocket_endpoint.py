@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..', 'src'))
 
 from agent import app, websocket_endpoint
+from concurrent.futures._base import InvalidStateError
 
 
 class TestWebSocketEndpoint:
@@ -255,4 +256,73 @@ class TestWebSocketEndpoint:
             )
             # Note: This might not always be called if exception happens before send_json
             # The important thing is that the exception is handled gracefully
+    
+    @pytest.mark.asyncio
+    async def test_invalid_state_error_suppressed(self, mock_websocket):
+        """Test that AWS CRT cleanup InvalidStateError is suppressed."""
+        with patch('agent.oauth2_handler', None), \
+             patch('agent.memory_client', None), \
+             patch('agent.create_nova_sonic_model') as mock_create_model, \
+             patch('agent.create_agent') as mock_create_agent, \
+             patch('agent.WebSocketInput') as mock_ws_input_class, \
+             patch('agent.WebSocketOutput') as mock_ws_output_class:
+            
+            mock_model = MagicMock()
+            mock_create_model.return_value = mock_model
+            
+            mock_agent = MagicMock()
+            mock_agent.run = AsyncMock()
+            mock_create_agent.return_value = mock_agent
+            
+            mock_ws_input = AsyncMock()
+            mock_ws_input.start = AsyncMock()
+            mock_ws_input_class.return_value = mock_ws_input
+            
+            mock_ws_output = AsyncMock()
+            mock_ws_output.start = AsyncMock()
+            mock_ws_output_class.return_value = mock_ws_output
+            
+            # Simulate AWS CRT cleanup error (CANCELLED)
+            cleanup_error = InvalidStateError("CANCELLED: <Future at 0x123 state=cancelled>")
+            mock_agent.run.side_effect = cleanup_error
+            
+            # Should not raise, should handle gracefully
+            try:
+                await websocket_endpoint(mock_websocket)
+            except Exception as e:
+                # Should not raise InvalidStateError for CANCELLED errors
+                assert not isinstance(e, InvalidStateError) or "CANCELLED" not in str(e)
+    
+    @pytest.mark.asyncio
+    async def test_invalid_state_error_non_cancelled_raises(self, mock_websocket):
+        """Test that non-cancelled InvalidStateError still raises."""
+        with patch('agent.oauth2_handler', None), \
+             patch('agent.memory_client', None), \
+             patch('agent.create_nova_sonic_model') as mock_create_model, \
+             patch('agent.create_agent') as mock_create_agent, \
+             patch('agent.WebSocketInput') as mock_ws_input_class, \
+             patch('agent.WebSocketOutput') as mock_ws_output_class:
+            
+            mock_model = MagicMock()
+            mock_create_model.return_value = mock_model
+            
+            mock_agent = MagicMock()
+            mock_agent.run = AsyncMock()
+            mock_create_agent.return_value = mock_agent
+            
+            mock_ws_input = AsyncMock()
+            mock_ws_input.start = AsyncMock()
+            mock_ws_input_class.return_value = mock_ws_input
+            
+            mock_ws_output = AsyncMock()
+            mock_ws_output.start = AsyncMock()
+            mock_ws_output_class.return_value = mock_ws_output
+            
+            # Simulate a different InvalidStateError (not CANCELLED)
+            other_error = InvalidStateError("Some other InvalidStateError")
+            mock_agent.run.side_effect = other_error
+            
+            # Should raise since it's not a cleanup error
+            with pytest.raises(InvalidStateError):
+                await websocket_endpoint(mock_websocket)
 

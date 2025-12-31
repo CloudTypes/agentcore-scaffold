@@ -8,6 +8,7 @@ import asyncio
 import logging
 from pathlib import Path
 from typing import AsyncIterator, Dict, Any, Awaitable, Optional
+from concurrent.futures._base import InvalidStateError
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Depends, HTTPException, status
 from fastapi.responses import JSONResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -60,6 +61,26 @@ logger = logging.getLogger(__name__)
 
 # Suppress noisy AWS CRT cleanup errors (harmless cancellation errors during WebSocket cleanup)
 logging.getLogger('awscrt').setLevel(logging.WARNING)
+# Also suppress errors from concurrent.futures that are raised during cleanup
+logging.getLogger('concurrent.futures').setLevel(logging.WARNING)
+
+# Custom exception handler to suppress AWS CRT cleanup errors from background tasks
+def suppress_awscrt_cleanup_error(exc_type, exc_value, exc_traceback):
+    """Suppress harmless AWS CRT cleanup errors that occur during WebSocket cleanup."""
+    if exc_type == InvalidStateError:
+        error_str = str(exc_value)
+        if "CANCELLED" in error_str or "cancelled" in error_str.lower():
+            # Suppress this error - it's a harmless cleanup race condition
+            logger.debug(f"Suppressed AWS CRT cleanup error: {exc_value}")
+            return
+    
+    # For all other exceptions, use default handler
+    import sys
+    sys.__excepthook__(exc_type, exc_value, exc_traceback)
+
+# Set custom exception handler
+import sys
+sys.excepthook = suppress_awscrt_cleanup_error
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -179,6 +200,9 @@ class WebSocketOutput:
             return
         
         try:
+            # Log all received events for debugging
+            logger.debug(f"[OUTPUT] Received event type: {type(event).__name__}")
+            
             # Handle different event types
             if isinstance(event, BidiAudioStreamEvent):
                 # Audio stream event - send audio data
@@ -197,13 +221,15 @@ class WebSocketOutput:
                 role = getattr(event, 'role', 'assistant')  # Default to assistant if role not present
                 is_final = getattr(event, 'is_final', False)
                 
+                logger.info(f"[OUTPUT] Transcript event - role: {role}, final: {is_final}, text: {event.text[:100] if event.text else 'empty'}")
+                
                 if is_final:
                     await self.websocket.send_json({
                         "type": "transcript",
                         "data": event.text,
                         "role": role
                     })
-                    logger.info(f"Sent final transcript ({role}): {event.text}")
+                    logger.info(f"[OUTPUT] Sent final transcript ({role}): {event.text}")
                     
                     # Store in memory if session manager is available
                     if self.session_manager:
@@ -271,6 +297,13 @@ class WebSocketOutput:
         except (WebSocketDisconnect, RuntimeError) as e:
             logger.debug(f"WebSocket closed while sending output: {e}")
             self._stopped = True
+        except InvalidStateError as e:
+            # Suppress AWS CRT cleanup errors (harmless cancellation errors during WebSocket cleanup)
+            if "CANCELLED" in str(e) or "cancelled" in str(e).lower():
+                logger.debug(f"AWS CRT cleanup error (harmless): {e}")
+            else:
+                logger.error(f"InvalidStateError sending output event: {e}", exc_info=True)
+                raise
         except Exception as e:
             logger.error(f"Error sending output event: {e}", exc_info=True)
 
@@ -287,6 +320,8 @@ class WebSocketInput:
         self.websocket = websocket
         self.session_manager = session_manager
         self._stopped = False
+        self._last_input_type = None  # Track 'audio' or 'text'
+        self._text_pending = False    # Flag for pending text input
     
     async def start(self, agent: BidiAgent) -> None:
         """Start the input source."""
@@ -317,6 +352,7 @@ class WebSocketInput:
             # Convert to appropriate event type
             if "audio" in data:
                 # Audio input - base64 encoded audio data
+                self._last_input_type = "audio"
                 audio_data = data["audio"]
                 sample_rate = data.get("sample_rate", INPUT_SAMPLE_RATE)
                 # Ensure sample_rate is one of the valid values
@@ -331,7 +367,7 @@ class WebSocketInput:
                     # Skip this invalid chunk and read the next message
                     return await self._read_next()
                 
-                logger.debug(f"Received audio chunk: {len(audio_data)} chars, format={format_type}, sample_rate={sample_rate}")
+                logger.debug(f"[AUDIO INPUT] Received audio chunk: {len(audio_data)} chars, format={format_type}, sample_rate={sample_rate}")
                 
                 # Create the audio input event
                 audio_event = BidiAudioInputEvent(
@@ -345,13 +381,28 @@ class WebSocketInput:
                 return audio_event
             elif "text" in data:
                 text = data["text"]
-                logger.info(f"Received text: {text}")
+                logger.info(f"[TEXT INPUT] Received text message: {text}")
+                logger.debug(f"[TEXT INPUT] WebSocket state: {self.websocket.client_state if hasattr(self.websocket, 'client_state') else 'unknown'}")
+                logger.debug(f"[TEXT INPUT] Session manager: {self.session_manager is not None}")
+                self._last_input_type = "text"
                 
                 # Store user input in memory if session manager is available
                 if self.session_manager:
-                    self.session_manager.store_user_input(text=text)
+                    try:
+                        self.session_manager.store_user_input(text=text)
+                        logger.debug(f"[TEXT INPUT] Stored in memory")
+                    except Exception as e:
+                        logger.warning(f"[TEXT INPUT] Failed to store in memory: {e}")
                 
-                return BidiTextInputEvent(text=text)
+                # Create text event
+                try:
+                    text_event = BidiTextInputEvent(text=text)
+                    logger.info(f"[TEXT INPUT] Created BidiTextInputEvent successfully")
+                    logger.debug(f"[TEXT INPUT] Event type: {type(text_event)}, text: {text_event.text}")
+                    return text_event
+                except Exception as e:
+                    logger.error(f"[TEXT INPUT] Failed to create BidiTextInputEvent: {e}", exc_info=True)
+                    raise
             else:
                 logger.warning(f"Received unknown data format: {data.keys()}")
                 # Default to text if format is unknown
@@ -450,6 +501,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     # Normal termination - client disconnected
                     logger.debug("Agent session ended (client disconnected)")
                     return
+                except InvalidStateError as e:
+                    # Suppress AWS CRT cleanup errors (harmless cancellation errors during WebSocket cleanup)
+                    if "CANCELLED" in str(e) or "cancelled" in str(e).lower():
+                        logger.debug(f"AWS CRT cleanup error (harmless): {e}")
+                        return
+                    else:
+                        logger.error(f"InvalidStateError inside agent.run(): {e}", exc_info=True)
+                        raise
                 except Exception as e:
                     # Check if it's a timeout error from Nova Sonic (expected when no audio input)
                     error_str = str(e)
@@ -465,6 +524,13 @@ async def websocket_endpoint(websocket: WebSocket):
         except (StopAsyncIteration, WebSocketDisconnect):
             # Normal termination - already handled in run_agent
             pass
+        except InvalidStateError as e:
+            # Suppress AWS CRT cleanup errors (harmless cancellation errors during WebSocket cleanup)
+            if "CANCELLED" in str(e) or "cancelled" in str(e).lower():
+                logger.debug(f"AWS CRT cleanup error (harmless): {e}")
+            else:
+                logger.error(f"InvalidStateError in agent.run(): {e}", exc_info=True)
+                raise
         except Exception as e:
             logger.error(f"Error in agent.run(): {e}", exc_info=True)
             # Try to send error to client
@@ -482,6 +548,13 @@ async def websocket_endpoint(websocket: WebSocket):
     except (StopAsyncIteration, asyncio.CancelledError):
         # Normal termination - client disconnected or agent stopped
         logger.debug("Agent session ended normally")
+    except InvalidStateError as e:
+        # Suppress AWS CRT cleanup errors (harmless cancellation errors during WebSocket cleanup)
+        if "CANCELLED" in str(e) or "cancelled" in str(e).lower():
+            logger.debug(f"AWS CRT cleanup error (harmless): {e}")
+        else:
+            logger.error(f"InvalidStateError in websocket_endpoint: {e}", exc_info=True)
+            raise
     except Exception as e:
         # Check if it's a timeout error from Nova Sonic (expected when no audio input for a while)
         error_str = str(e)

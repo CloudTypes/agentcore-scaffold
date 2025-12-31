@@ -12,6 +12,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..', 'src'))
 
 from agent import WebSocketOutput
+from concurrent.futures._base import InvalidStateError
 
 # Try to import actual event classes for testing
 try:
@@ -296,4 +297,52 @@ class TestWebSocketOutput:
         await output(event)
         
         assert output._event_count == initial_count + 1
+    
+    @pytest.mark.asyncio
+    async def test_invalid_state_error_suppressed(self, output, websocket):
+        """Test that AWS CRT cleanup InvalidStateError is suppressed."""
+        if not EVENT_CLASSES_AVAILABLE:
+            pytest.skip("Event classes not available for testing")
+        
+        # Simulate AWS CRT cleanup error
+        websocket.send_json.side_effect = InvalidStateError("CANCELLED: <Future at 0x123 state=cancelled>")
+        
+        event = BidiResponseStartEvent(response_id="test-response-123")
+        
+        # Should not raise, should handle gracefully
+        await output(event)
+        
+        # Should have marked as stopped or handled gracefully
+        # The error should be suppressed (logged at debug level)
+        assert websocket.send_json.called
+    
+    @pytest.mark.asyncio
+    async def test_invalid_state_error_non_cancelled_raises(self, output, websocket):
+        """Test that non-cancelled InvalidStateError still raises."""
+        if not EVENT_CLASSES_AVAILABLE:
+            pytest.skip("Event classes not available for testing")
+        
+        # Simulate a different InvalidStateError (not CANCELLED)
+        websocket.send_json.side_effect = InvalidStateError("Some other error")
+        
+        event = BidiResponseStartEvent(response_id="test-response-123")
+        
+        # Should raise since it's not a cleanup error
+        with pytest.raises(InvalidStateError):
+            await output(event)
+    
+    @pytest.mark.asyncio
+    async def test_runtime_error_handled(self, output, websocket):
+        """Test that RuntimeError is handled gracefully."""
+        if not EVENT_CLASSES_AVAILABLE:
+            pytest.skip("Event classes not available for testing")
+        
+        websocket.send_json.side_effect = RuntimeError("Connection closed")
+        
+        event = BidiResponseStartEvent(response_id="test-response-123")
+        
+        # Should not raise, should handle gracefully
+        await output(event)
+        
+        assert output._stopped is True
 

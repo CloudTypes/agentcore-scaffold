@@ -34,6 +34,8 @@ class TestWebSocketInput:
         ws_input = WebSocketInput(websocket)
         assert ws_input.websocket == websocket
         assert ws_input._stopped is False
+        assert ws_input._last_input_type is None
+        assert ws_input._text_pending is False
     
     @pytest.mark.asyncio
     async def test_start(self, ws_input):
@@ -56,7 +58,56 @@ class TestWebSocketInput:
         result = await ws_input()
         
         assert result.text == "Hello, world"
+        assert ws_input._last_input_type == "text"
         websocket.receive_json.assert_called_once()
+    
+    @pytest.mark.asyncio
+    async def test_text_input_tracks_input_type(self, ws_input, websocket):
+        """Test that text input sets _last_input_type correctly."""
+        websocket.receive_json.return_value = {"text": "Test message"}
+        
+        await ws_input()
+        
+        assert ws_input._last_input_type == "text"
+    
+    @pytest.mark.asyncio
+    async def test_audio_input_tracks_input_type(self, ws_input, websocket):
+        """Test that audio input sets _last_input_type correctly."""
+        websocket.receive_json.return_value = {
+            "audio": "base64_audio_data",
+            "format": "pcm",
+            "sample_rate": 16000
+        }
+        
+        await ws_input()
+        
+        assert ws_input._last_input_type == "audio"
+    
+    @pytest.mark.asyncio
+    async def test_text_input_with_session_manager(self, websocket):
+        """Test text input with session manager stores in memory."""
+        mock_session_manager = MagicMock()
+        ws_input = WebSocketInput(websocket, session_manager=mock_session_manager)
+        websocket.receive_json.return_value = {"text": "Hello, world"}
+        
+        result = await ws_input()
+        
+        assert result.text == "Hello, world"
+        mock_session_manager.store_user_input.assert_called_once_with(text="Hello, world")
+    
+    @pytest.mark.asyncio
+    async def test_text_input_memory_storage_error_handled(self, websocket):
+        """Test that text input handles memory storage errors gracefully."""
+        mock_session_manager = MagicMock()
+        mock_session_manager.store_user_input.side_effect = Exception("Memory error")
+        ws_input = WebSocketInput(websocket, session_manager=mock_session_manager)
+        websocket.receive_json.return_value = {"text": "Hello, world"}
+        
+        # Should not raise, should still return text event
+        result = await ws_input()
+        
+        assert result.text == "Hello, world"
+        mock_session_manager.store_user_input.assert_called_once()
     
     @pytest.mark.asyncio
     async def test_audio_input_pcm(self, ws_input, websocket):

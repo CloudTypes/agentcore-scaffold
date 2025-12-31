@@ -3,6 +3,7 @@ let audioContext = null;
 let audioStream = null;
 let scriptProcessor = null;
 let isMuted = false;
+let lastInputWasText = false;  // Track if last input was text
 
 // Audio playback queue
 let audioQueue = [];
@@ -476,6 +477,9 @@ function connect() {
         muteBtn.disabled = false;
         sendTextBtn.disabled = false;
         
+        // Initialize mode indicator
+        updateInputModeIndicator('voice');
+        
         // Auto-start recording for bi-directional streaming
         await startRecording();
     };
@@ -600,10 +604,12 @@ function toggleMute() {
         muteBtn.textContent = '🔇 Muted';
         muteBtn.style.background = '#dc3545';
         addMessage('System', 'Microphone muted', 'agent');
+        updateInputModeIndicator('text');  // When muted, primarily text mode
     } else {
         muteBtn.textContent = '🔊 Unmuted';
         muteBtn.style.background = '#28a745';
         addMessage('System', 'Microphone unmuted', 'agent');
+        updateInputModeIndicator('mixed');  // When unmuted, mixed mode
     }
 }
 
@@ -624,13 +630,60 @@ function sendAudio(base64PCM) {
 
 function sendText() {
     const text = textInput.value.trim();
-    if (text && websocket && websocket.readyState === WebSocket.OPEN) {
+    if (!text) {
+        return;  // Don't send empty messages
+    }
+    
+    if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+        addMessage('Error', 'WebSocket not connected. Please connect first.', 'error');
+        return;
+    }
+    
+    try {
+        // Pause audio recording temporarily to avoid interference
+        const wasMuted = isMuted;
+        isMuted = true;
+        lastInputWasText = true;
+        
+        // Update mode indicator
+        updateInputModeIndicator('text');
+        
+        // Send text message
         websocket.send(JSON.stringify({
-            text: text
+            text: text,
+            input_type: 'text'  // Explicitly mark as text input
         }));
+        
         addMessage('User', text, 'user');
         textInput.value = '';
+        
+        // Resume audio after a brief delay (allow text to be processed)
+        setTimeout(() => {
+            isMuted = wasMuted;
+            // Update mode indicator back to voice or mixed
+            if (!wasMuted) {
+                updateInputModeIndicator('mixed');
+            } else {
+                updateInputModeIndicator('voice');
+            }
+        }, 500);
+    } catch (error) {
+        console.error('Error sending text message:', error);
+        addMessage('Error', 'Failed to send text message. Please try again.', 'error');
+        // Reset mute state on error
+        isMuted = false;
+        updateInputModeIndicator('mixed');
     }
+}
+
+// Add Enter key support for text input
+if (textInput) {
+    textInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendText();
+        }
+    });
 }
 
 // Handle responses
@@ -653,9 +706,15 @@ function handleAgentResponse(data) {
                 lastUserMessage = messageText;
             }
         } else {
+            // Assistant transcript
             if (lastAgentMessage !== messageText) {
                 addMessage('Agent', messageText, 'agent');
                 lastAgentMessage = messageText;
+                // Update mode indicator if this is a text response
+                if (lastInputWasText) {
+                    updateInputModeIndicator('text');
+                    lastInputWasText = false;  // Reset after response
+                }
             }
         }
     } else if (data.type === 'text') {
@@ -797,6 +856,22 @@ async function playAudioChunk(base64PCM, sampleRate = 16000) {
 function updateStatus(status) {
     statusEl.className = `status ${status}`;
     statusEl.textContent = `Status: ${status.charAt(0).toUpperCase() + status.slice(1)}`;
+}
+
+function updateInputModeIndicator(mode) {
+    const indicator = document.getElementById('inputModeIndicator');
+    if (!indicator) return;
+    
+    if (mode === 'text') {
+        indicator.textContent = '⌨️ Text Mode';
+        indicator.style.background = '#fff3e0';
+    } else if (mode === 'voice') {
+        indicator.textContent = '🎤 Voice Mode';
+        indicator.style.background = '#e3f2fd';
+    } else {
+        indicator.textContent = '🎤⌨️ Mixed Mode';
+        indicator.style.background = '#f3e5f5';
+    }
 }
 
 function addMessage(sender, text, type) {

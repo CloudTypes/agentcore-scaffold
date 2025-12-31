@@ -169,6 +169,11 @@
             <div class="messages" id="messages"></div>
             
             <div class="controls">
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+                    <span id="inputModeIndicator" style="padding: 5px 10px; background: #e3f2fd; border-radius: 3px; font-size: 12px;">
+                        🎤 Voice Mode
+                    </span>
+                </div>
                 <input type="text" id="textInput" placeholder="Type a message (for testing)" style="width: 70%; padding: 10px;">
                 <button onclick="sendText()" id="sendTextBtn" disabled>Send Text</button>
             </div>
