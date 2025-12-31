@@ -7,8 +7,17 @@ import warnings
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from fastapi import WebSocket
 from fastapi.testclient import TestClient
+from pathlib import Path
 import sys
 import os
+
+# Load .env file from project root if it exists
+# This ensures tests use the same configuration as the application
+project_root = Path(__file__).parent.parent
+env_file = project_root / '.env'
+if env_file.exists():
+    from dotenv import load_dotenv
+    load_dotenv(env_file, override=False)  # Don't override existing env vars
 
 # Note: PytestUnraisableExceptionWarning warnings from AWS CRT are expected and harmless.
 # These occur when AWS CRT tries to complete futures that have been cancelled by mocks.
@@ -80,17 +89,54 @@ def mock_requests_get(monkeypatch):
 
 @pytest.fixture
 def mock_env_vars(monkeypatch):
-    """Mock environment variables."""
-    env_vars = {
-        "AWS_REGION": "us-east-1",
+    """
+    Load environment variables from .env file, with test-specific overrides.
+    
+    This fixture loads values from .env file (if it exists) and applies
+    test-specific overrides. This ensures tests use the same configuration
+    as the application while allowing test-specific values where needed.
+    """
+    # Test-specific overrides (values that should always be test values)
+    test_overrides = {
+        "WEATHER_API_KEY": "test_api_key_12345",  # Always use test API key
+    }
+    
+    # Environment variables to load from .env or use defaults
+    # Priority: .env file > test_overrides > defaults
+    env_vars = {}
+    
+    # Keys that should come from .env if available
+    env_keys = [
+        "AWS_REGION",
+        "AGENTCORE_MEMORY_REGION", 
+        "MODEL_ID",
+        "VOICE",
+        "INPUT_SAMPLE_RATE",
+        "OUTPUT_SAMPLE_RATE",
+    ]
+    
+    # Default values (used if not in .env and not in test_overrides)
+    defaults = {
+        "AWS_REGION": "us-west-2",
+        "AGENTCORE_MEMORY_REGION": "us-west-2",
         "MODEL_ID": "amazon.nova-sonic-v1:0",
         "VOICE": "matthew",
         "INPUT_SAMPLE_RATE": "16000",
         "OUTPUT_SAMPLE_RATE": "24000",
-        "WEATHER_API_KEY": "test_api_key_12345",
     }
-    for key, value in env_vars.items():
+    
+    # Load values: .env > test_overrides > defaults
+    for key in env_keys:
+        value = os.getenv(key) or test_overrides.get(key) or defaults.get(key)
+        if value:
+            env_vars[key] = value
+            monkeypatch.setenv(key, value)
+    
+    # Apply test overrides (these always override .env values)
+    for key, value in test_overrides.items():
+        env_vars[key] = value
         monkeypatch.setenv(key, value)
+    
     return env_vars
 
 
@@ -110,4 +156,88 @@ def mock_bidi_events():
         return event
     
     return create_event
+
+
+@pytest.fixture
+def mock_memory_client():
+    """Mock MemoryClient for testing."""
+    with patch('memory.client.MEMORY_AVAILABLE', True):
+        client = MagicMock()
+        client.memory_id = "test-memory-id"
+        # Use region from .env file or default
+        client.region = os.getenv("AGENTCORE_MEMORY_REGION") or os.getenv("AWS_REGION", "us-west-2")
+        client.retrieve_memories = MagicMock(return_value=[])
+        client.get_user_preferences = MagicMock(return_value=[])
+        client.store_event = MagicMock()
+        client.get_session_summary = MagicMock(return_value=None)
+        client.list_sessions = MagicMock(return_value=[])
+        client.create_memory_resource = MagicMock(return_value={"memoryId": "test-memory-id"})
+        yield client
+
+
+@pytest.fixture
+def mock_memory_available():
+    """Context manager for MEMORY_AVAILABLE flag."""
+    with patch('memory.client.MEMORY_AVAILABLE', True):
+        yield
+
+
+@pytest.fixture
+def mock_agentcore_memory_client():
+    """Mock AgentCore Memory SDK client."""
+    with patch('memory.client.AgentCoreMemoryClient') as mock_client_class:
+        mock_client = MagicMock()
+        mock_client.create_event = MagicMock()
+        mock_client.retrieve_memory_records = MagicMock(return_value={"memoryRecords": []})
+        mock_client.create_memory = MagicMock(return_value={"memoryId": "new-memory-id"})
+        mock_client_class.return_value = mock_client
+        yield mock_client
+
+
+@pytest.fixture
+def mock_bedrock_client():
+    """Mock boto3 bedrock-agentcore client."""
+    with patch('memory.client.boto3.client') as mock_boto3:
+        mock_client = MagicMock()
+        mock_client.list_memory_records = MagicMock(return_value={"memoryRecordSummaries": []})
+        mock_client.get_memory_record = MagicMock(return_value={"memoryRecord": {}})
+        mock_boto3.return_value = mock_client
+        yield mock_client
+
+
+@pytest.fixture
+def sample_memory_records():
+    """Sample memory record data structures."""
+    return [
+        {
+            "memoryRecordId": "record-1",
+            "namespace": "/summaries/user_example_com/session-123",
+            "content": {"text": "Past conversation about weather"}
+        },
+        {
+            "memoryRecordId": "record-2",
+            "namespace": "/semantic/user_example_com",
+            "content": {"text": "User likes Python programming"}
+        }
+    ]
+
+
+@pytest.fixture
+def sample_session_data():
+    """Sample session data."""
+    return {
+        "session_id": "session-123",
+        "summary": "User asked about weather in Denver",
+        "namespace": "/summaries/user_example_com/session-123"
+    }
+
+
+@pytest.fixture
+def mock_user_info():
+    """Mock authenticated user info."""
+    return {
+        "email": "user@example.com",
+        "name": "Test User",
+        "sub": "user-123"
+    }
 

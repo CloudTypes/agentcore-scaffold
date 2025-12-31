@@ -66,7 +66,8 @@ class TestRootEndpoint:
     
     def test_root_response_structure(self, client):
         """Test root endpoint response structure."""
-        response = client.get("/")
+        # Root endpoint may serve HTML if index.html exists, so test /api instead
+        response = client.get("/api")
         data = response.json()
         
         assert "service" in data
@@ -77,7 +78,8 @@ class TestRootEndpoint:
     
     def test_root_service_info(self, client):
         """Test root endpoint service information."""
-        response = client.get("/")
+        # Root endpoint may serve HTML if index.html exists, so test /api instead
+        response = client.get("/api")
         data = response.json()
         
         assert data["service"] == "AgentCore Voice Agent"
@@ -85,7 +87,8 @@ class TestRootEndpoint:
     
     def test_root_endpoints_list(self, client):
         """Test root endpoint includes endpoints list."""
-        response = client.get("/")
+        # Root endpoint may serve HTML if index.html exists, so test /api instead
+        response = client.get("/api")
         data = response.json()
         
         assert "websocket" in data["endpoints"]
@@ -95,7 +98,8 @@ class TestRootEndpoint:
     
     def test_root_model_info(self, client):
         """Test root endpoint includes model information."""
-        response = client.get("/")
+        # Root endpoint may serve HTML if index.html exists, so test /api instead
+        response = client.get("/api")
         data = response.json()
         
         assert "model" in data
@@ -105,6 +109,7 @@ class TestRootEndpoint:
     
     def test_root_content_type(self, client):
         """Test root endpoint returns JSON content type."""
-        response = client.get("/")
+        # Root endpoint may serve HTML if index.html exists, so test /api instead
+        response = client.get("/api")
         assert response.headers["content-type"] == "application/json"
 

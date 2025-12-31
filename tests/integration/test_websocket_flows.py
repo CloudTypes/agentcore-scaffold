@@ -98,12 +98,42 @@ def receive_single_message_with_timeout(websocket, timeout=3.0):
     return messages[0] if messages else None
 
 
+@pytest.fixture
+def disable_auth_and_memory():
+    """Fixture to disable OAuth2 and memory for WebSocket tests."""
+    import agent
+    original_oauth2 = agent.oauth2_handler
+    original_memory = agent.memory_client
+    
+    # Disable auth and memory
+    agent.oauth2_handler = None
+    agent.memory_client = None
+    
+    yield
+    
+    # Restore original values
+    agent.oauth2_handler = original_oauth2
+    agent.memory_client = original_memory
+
+
 class TestWebSocketConnection:
     """Test cases for WebSocket connection establishment."""
     
     @pytest.mark.integration
-    def test_websocket_connection_established(self, test_client, mock_env_vars):
+    def test_websocket_connection_established(self, test_client, mock_env_vars, disable_auth_and_memory):
         """Test that WebSocket connection is successfully established."""
+        async def _mock_run(inputs=None, outputs=None):
+            """Mock agent that sends connection_start then exits."""
+            if outputs:
+                output = outputs[0]
+                # Send connection start event before exiting
+                await output(BidiConnectionStartEvent(
+                    connection_id="test-conn-1",
+                    model="test-model"
+                ))
+                # Then raise StopAsyncIteration to exit
+                raise StopAsyncIteration()
+        
         with patch('agent.create_nova_sonic_model') as mock_create_model, \
              patch('agent.create_agent') as mock_create_agent:
             
@@ -111,35 +141,29 @@ class TestWebSocketConnection:
             mock_create_model.return_value = mock_model
             
             mock_agent = MagicMock()
-            mock_agent.run = AsyncMock()
-            # Simulate immediate completion
-            mock_agent.run.side_effect = StopAsyncIteration()
+            mock_agent.run = AsyncMock(side_effect=_mock_run)
             mock_create_agent.return_value = mock_agent
             
-            # Reload agent module to pick up mocked functions
-            import agent
-            importlib.reload(agent)
-            
-            try:
-                with test_client.websocket_connect("/ws") as websocket:
-                    # Connection should be established
-                    # Wait a bit for connection_start event if agent sends it
-                    try:
-                        message = websocket.receive_json()
+            with test_client.websocket_connect("/ws") as websocket:
+                # Connection should be established
+                # Wait for connection_start event with timeout
+                try:
+                    message = receive_single_message_with_timeout(websocket, timeout=2.0)
+                    if message:
                         # If we get a message, it should be a valid type
                         assert "type" in message
-                    except Exception:
-                        # No message is also acceptable for this test
-                        pass
-            finally:
-                importlib.reload(agent)
+                        assert message["type"] in ["connection_start", "response_start", "transcript", 
+                                                 "response_complete", "error", "tool_use", "audio"]
+                except Exception:
+                    # No message is also acceptable for this test (connection established is the main goal)
+                    pass
 
 
 class TestTextMessageFlows:
     """Test cases for text message exchange."""
     
     @pytest.mark.integration
-    def test_text_message_roundtrip(self, test_client, mock_env_vars):
+    def test_text_message_roundtrip(self, test_client, mock_env_vars, disable_auth_and_memory):
         """Test sending a text message and receiving a response."""
         async def _mock_run(inputs=None, outputs=None):
             if outputs:
@@ -179,30 +203,24 @@ class TestTextMessageFlows:
             mock_agent.model = mock_model
             mock_create_agent.return_value = mock_agent
             
-            import agent
-            importlib.reload(agent)
-            
-            try:
-                with test_client.websocket_connect("/ws") as websocket:
-                    # Send text message
-                    websocket.send_json({"text": "Hello, agent"})
-                    
-                    # Receive messages with timeout protection
-                    messages = receive_messages_with_timeout(websocket, max_messages=5, timeout=3.0)
-                    
-                    # Verify we got at least one message OR verify the connection worked
-                    # (Even if no messages, the connection itself is a success)
-                    if len(messages) > 0:
-                        # Verify message structure
-                        for msg in messages:
-                            assert "type" in msg
-                            assert msg["type"] in ["connection_start", "response_start", "transcript", 
-                                                 "response_complete", "error", "tool_use", "audio"]
-            finally:
-                importlib.reload(agent)
+            with test_client.websocket_connect("/ws") as websocket:
+                # Send text message
+                websocket.send_json({"text": "Hello, agent"})
+                
+                # Receive messages with timeout protection
+                messages = receive_messages_with_timeout(websocket, max_messages=5, timeout=3.0)
+                
+                # Verify we got at least one message OR verify the connection worked
+                # (Even if no messages, the connection itself is a success)
+                if len(messages) > 0:
+                    # Verify message structure
+                    for msg in messages:
+                        assert "type" in msg
+                        assert msg["type"] in ["connection_start", "response_start", "transcript", 
+                                             "response_complete", "error", "tool_use", "audio"]
     
     @pytest.mark.integration
-    def test_multiple_text_messages_sequence(self, test_client, mock_env_vars):
+    def test_multiple_text_messages_sequence(self, test_client, mock_env_vars, disable_auth_and_memory):
         """Test sending multiple text messages in sequence."""
         call_count = {"count": 0}
         
@@ -241,32 +259,26 @@ class TestTextMessageFlows:
             mock_agent.model = mock_model
             mock_create_agent.return_value = mock_agent
             
-            import agent
-            importlib.reload(agent)
-            
-            try:
-                with test_client.websocket_connect("/ws") as websocket:
-                    # Send first message
-                    websocket.send_json({"text": "First message"})
-                    
-                    # Receive first response with timeout protection
-                    messages = receive_messages_with_timeout(websocket, max_messages=3, timeout=3.0)
-                    
-                    # Verify we got messages
-                    if len(messages) >= 3:
-                        # Should have connection_start, response_start, and transcript
-                        msg = messages[2]  # Third message should be transcript
-                        assert msg["type"] == "transcript"
-                        assert "Response 1" in msg["data"]
-            finally:
-                importlib.reload(agent)
+            with test_client.websocket_connect("/ws") as websocket:
+                # Send first message
+                websocket.send_json({"text": "First message"})
+                
+                # Receive first response with timeout protection
+                messages = receive_messages_with_timeout(websocket, max_messages=3, timeout=3.0)
+                
+                # Verify we got messages
+                if len(messages) >= 3:
+                    # Should have connection_start, response_start, and transcript
+                    msg = messages[2]  # Third message should be transcript
+                    assert msg["type"] == "transcript"
+                    assert "Response 1" in msg["data"]
 
 
 class TestAudioMessageFlows:
     """Test cases for audio message exchange."""
     
     @pytest.mark.integration
-    def test_audio_message_roundtrip(self, test_client, mock_env_vars, sample_pcm_audio):
+    def test_audio_message_roundtrip(self, test_client, mock_env_vars, sample_pcm_audio, disable_auth_and_memory):
         """Test sending an audio message and receiving a response."""
         async def _mock_run(inputs=None, outputs=None):
             if outputs:
@@ -288,7 +300,9 @@ class TestAudioMessageFlows:
                     stop_reason="complete"
                 ))
         
-        with patch('agent.create_nova_sonic_model') as mock_create_model, \
+        with patch('agent.oauth2_handler', None), \
+             patch('agent.memory_client', None), \
+             patch('agent.create_nova_sonic_model') as mock_create_model, \
              patch('agent.create_agent') as mock_create_agent:
             
             mock_model = MagicMock()
@@ -303,11 +317,7 @@ class TestAudioMessageFlows:
             mock_agent.model = mock_model
             mock_create_agent.return_value = mock_agent
             
-            import agent
-            importlib.reload(agent)
-            
-            try:
-                with test_client.websocket_connect("/ws") as websocket:
+            with test_client.websocket_connect("/ws") as websocket:
                     # Send audio message
                     websocket.send_json({
                         "audio": sample_pcm_audio,
@@ -327,15 +337,13 @@ class TestAudioMessageFlows:
                         assert messages[2]["data"] == sample_pcm_audio
                         assert messages[2]["format"] == "pcm"
                         assert messages[2]["sample_rate"] == 24000
-            finally:
-                importlib.reload(agent)
 
 
 class TestErrorHandling:
     """Test cases for error handling."""
     
     @pytest.mark.integration
-    def test_invalid_message_format(self, test_client, mock_env_vars):
+    def test_invalid_message_format(self, test_client, mock_env_vars, disable_auth_and_memory):
         """Test handling of invalid message format."""
         async def _mock_run(inputs=None, outputs=None):
             # Agent should handle invalid input gracefully
@@ -343,7 +351,9 @@ class TestErrorHandling:
             await asyncio.sleep(0.1)
             raise StopAsyncIteration()
         
-        with patch('agent.create_nova_sonic_model') as mock_create_model, \
+        with patch('agent.oauth2_handler', None), \
+             patch('agent.memory_client', None), \
+             patch('agent.create_nova_sonic_model') as mock_create_model, \
              patch('agent.create_agent') as mock_create_agent:
             
             mock_model = MagicMock()
@@ -358,11 +368,7 @@ class TestErrorHandling:
             mock_agent.model = mock_model
             mock_create_agent.return_value = mock_agent
             
-            import agent
-            importlib.reload(agent)
-            
-            try:
-                with test_client.websocket_connect("/ws") as websocket:
+            with test_client.websocket_connect("/ws") as websocket:
                     # Send invalid message format
                     websocket.send_json({"invalid_key": "invalid_value"})
                     
@@ -373,11 +379,9 @@ class TestErrorHandling:
                         # If we get a message, it should be valid JSON
                         assert isinstance(message, dict)
                     # No message is acceptable - invalid format might be ignored
-            finally:
-                importlib.reload(agent)
     
     @pytest.mark.integration
-    def test_agent_error_propagation(self, test_client, mock_env_vars):
+    def test_agent_error_propagation(self, test_client, mock_env_vars, disable_auth_and_memory):
         """Test that agent errors are propagated to the client."""
         # Send connection_start first (as real agent does), then error event
         async def _mock_run(inputs=None, outputs=None):
@@ -395,7 +399,9 @@ class TestErrorHandling:
                 await asyncio.sleep(0.01)
                 raise StopAsyncIteration()
         
-        with patch('agent.create_nova_sonic_model') as mock_create_model, \
+        with patch('agent.oauth2_handler', None), \
+             patch('agent.memory_client', None), \
+             patch('agent.create_nova_sonic_model') as mock_create_model, \
              patch('agent.create_agent') as mock_create_agent:
             
             mock_model = MagicMock()
@@ -410,11 +416,7 @@ class TestErrorHandling:
             mock_agent.model = mock_model
             mock_create_agent.return_value = mock_agent
             
-            import agent
-            importlib.reload(agent)
-            
-            try:
-                with test_client.websocket_connect("/ws") as websocket:
+            with test_client.websocket_connect("/ws") as websocket:
                     websocket.send_json({"text": "Test message"})
                     
                     # Receive messages with timeout protection - should receive connection_start then error
@@ -459,8 +461,6 @@ class TestErrorHandling:
                     assert error_message is not None, f"Expected error message but received: {messages}"
                     # The error message should contain "error" or "Agent error" (from error handling)
                     assert "error" in error_message["message"].lower() or "agent error" in error_message["message"].lower()
-            finally:
-                importlib.reload(agent)
 
 
 class TestToolUsageFlows:
@@ -473,7 +473,7 @@ class TestToolUsageFlows:
     """
     
     @pytest.mark.integration
-    def test_calculator_tool_flow(self, test_client, mock_env_vars):
+    def test_calculator_tool_flow(self, test_client, mock_env_vars, disable_auth_and_memory):
         """Test calculator tool usage flow."""
         async def _mock_run(inputs=None, outputs=None):
             if outputs:
@@ -500,8 +500,6 @@ class TestToolUsageFlows:
         
         # Import agent module first
         import agent
-        importlib.reload(agent)
-        
         # Patch after reload to ensure patches are active
         with patch.object(agent, 'create_nova_sonic_model') as mock_create_model, \
              patch.object(agent, 'create_agent') as mock_create_agent:
@@ -519,8 +517,7 @@ class TestToolUsageFlows:
             mock_agent.model = mock_model
             mock_create_agent.return_value = mock_agent
             
-            try:
-                with test_client.websocket_connect("/ws") as websocket:
+            with test_client.websocket_connect("/ws") as websocket:
                     websocket.send_json({"text": "What is 2 plus 2?"})
                     
                     # Receive messages with timeout protection
@@ -540,11 +537,9 @@ class TestToolUsageFlows:
                     
                     # Verify response_complete
                     assert any(msg.get("type") == "response_complete" for msg in messages), f"Expected response_complete but received: {messages}"
-            finally:
-                importlib.reload(agent)
     
     @pytest.mark.integration
-    def test_weather_tool_flow(self, test_client, mock_env_vars):
+    def test_weather_tool_flow(self, test_client, mock_env_vars, disable_auth_and_memory):
         """Test weather tool usage flow."""
         async def _mock_run(inputs=None, outputs=None):
             if outputs:
@@ -571,8 +566,6 @@ class TestToolUsageFlows:
         
         # Import agent module first
         import agent
-        importlib.reload(agent)
-        
         # Patch after reload to ensure patches are active
         with patch.object(agent, 'create_nova_sonic_model') as mock_create_model, \
              patch.object(agent, 'create_agent') as mock_create_agent:
@@ -590,8 +583,7 @@ class TestToolUsageFlows:
             mock_agent.model = mock_model
             mock_create_agent.return_value = mock_agent
             
-            try:
-                with test_client.websocket_connect("/ws") as websocket:
+            with test_client.websocket_connect("/ws") as websocket:
                     websocket.send_json({"text": "What's the weather in Denver, Colorado?"})
                     
                     # Receive messages with timeout protection
@@ -611,11 +603,9 @@ class TestToolUsageFlows:
                     
                     # Verify response_complete
                     assert any(msg.get("type") == "response_complete" for msg in messages), f"Expected response_complete but received: {messages}"
-            finally:
-                importlib.reload(agent)
     
     @pytest.mark.integration
-    def test_database_tool_flow(self, test_client, mock_env_vars):
+    def test_database_tool_flow(self, test_client, mock_env_vars, disable_auth_and_memory):
         """Test database query tool usage flow."""
         async def _mock_run(inputs=None, outputs=None):
             if outputs:
@@ -642,8 +632,6 @@ class TestToolUsageFlows:
         
         # Import agent module first
         import agent
-        importlib.reload(agent)
-        
         # Patch after reload to ensure patches are active
         with patch.object(agent, 'create_nova_sonic_model') as mock_create_model, \
              patch.object(agent, 'create_agent') as mock_create_agent:
@@ -661,8 +649,7 @@ class TestToolUsageFlows:
             mock_agent.model = mock_model
             mock_create_agent.return_value = mock_agent
             
-            try:
-                with test_client.websocket_connect("/ws") as websocket:
+            with test_client.websocket_connect("/ws") as websocket:
                     websocket.send_json({"text": "Find users named Alice"})
                     
                     # Receive messages with timeout protection
@@ -682,5 +669,3 @@ class TestToolUsageFlows:
                     
                     # Verify response_complete
                     assert any(msg.get("type") == "response_complete" for msg in messages), f"Expected response_complete but received: {messages}"
-            finally:
-                importlib.reload(agent)
