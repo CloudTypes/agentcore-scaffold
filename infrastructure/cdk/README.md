@@ -174,9 +174,11 @@ aws secretsmanager put-secret-value \
   --secret-string file://oauth2-secret.json
 ```
 
-#### 2. JWT Secret
+#### 2. JWT Secret (User Authentication)
 
 **Secret Name**: `agentcore/voice-agent/jwt-secret`
+
+**Purpose**: Secret key for signing/verifying JWT tokens for **user authentication** (OAuth2 flow).
 
 **Secret Value Format**:
 ```json
@@ -206,7 +208,51 @@ aws secretsmanager put-secret-value \
   --secret-string file://jwt-secret.json
 ```
 
-#### 3. Memory ID
+#### 3. Agent Authentication Secret (Inter-Agent Communication)
+
+**Secret Name**: `agentcore/voice-agent/agent-auth-secret`
+
+**Purpose**: Secret key for signing/verifying JWT tokens for **agent-to-agent (A2A) communication**. This is used by the orchestrator and specialist agents to authenticate with each other.
+
+**Important**: This is **different** from `JWT_SECRET_KEY`. They serve different purposes:
+- `JWT_SECRET_KEY`: User authentication (OAuth2)
+- `AGENT_AUTH_SECRET`: Agent-to-agent authentication (A2A)
+
+**Secret Value Format**:
+```json
+{
+  "secret_key": "your-secure-random-secret-key"
+}
+```
+
+**CLI Command to Update**:
+```bash
+# Generate a secure random key (same method as JWT_SECRET_KEY)
+AGENT_AUTH_SECRET=$(openssl rand -hex 32)
+
+# Update the secret
+aws secretsmanager put-secret-value \
+  --region REGION \
+  --secret-id agentcore/voice-agent/agent-auth-secret \
+  --secret-string "{\"secret_key\": \"$AGENT_AUTH_SECRET\"}"
+```
+
+**Alternative: Using a JSON file**:
+```bash
+# Create a file agent-auth-secret.json with: {"secret_key": "your-secret-key"}
+aws secretsmanager put-secret-value \
+  --region REGION \
+  --secret-id agentcore/voice-agent/agent-auth-secret \
+  --secret-string file://agent-auth-secret.json
+```
+
+**Note**: All agents (orchestrator, vision, document, data, tool) must use the **same** `AGENT_AUTH_SECRET` value to communicate with each other. This secret should be:
+- At least 32 characters (preferably 64)
+- Cryptographically secure random string
+- Stored in Secrets Manager (not SSM, since it's sensitive)
+- Different from `JWT_SECRET_KEY`
+
+#### 4. Memory ID
 
 **Secret Name**: `agentcore/voice-agent/memory-id`
 

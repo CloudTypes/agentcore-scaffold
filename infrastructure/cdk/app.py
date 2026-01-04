@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 import aws_cdk as cdk
 from agentcore_stack import AgentCoreStack
 from agentcore_runtime_stack import AgentCoreRuntimeStack
+from multi_agent_stack import MultiAgentStack
 # Memory stack removed - use scripts/manage_memory.py instead
 # from agentcore_memory_stack import AgentCoreMemoryStack
 
@@ -72,6 +73,18 @@ runtime_stack = AgentCoreRuntimeStack(
 
 # Add dependencies
 runtime_stack.add_dependency(base_stack)
+
+# Create Multi-Agent stack (for orchestrator + specialist agents)
+multi_agent_stack = MultiAgentStack(
+    app,
+    f"AgentCoreMultiAgent-{env_name}",
+    env=env,
+    description=f"Multi-agent system with A2A protocol ({env_name})",
+    base_stack=base_stack,
+)
+
+# Multi-agent stack depends on base stack
+multi_agent_stack.add_dependency(base_stack)
 
 app.synth()
 

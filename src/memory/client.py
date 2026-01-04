@@ -12,6 +12,7 @@ try:
     from bedrock_agentcore.memory import MemoryClient as AgentCoreMemoryClient
     from bedrock_agentcore.memory import MemoryControlPlaneClient
     from bedrock_agentcore.memory.models import Event, MemoryRecord
+    from bedrock_agentcore.memory.constants import StrategyType
     MEMORY_AVAILABLE = True
 except ImportError:
     logger.warning("bedrock_agentcore.memory not available - memory features disabled")
@@ -20,6 +21,7 @@ except ImportError:
     MemoryControlPlaneClient = None
     Event = None
     MemoryRecord = None
+    StrategyType = None
 
 
 class MemoryClient:
@@ -99,25 +101,39 @@ class MemoryClient:
                 logger.info("Creating new memory resource...")
         
         # Create new memory resource with all three strategies
-        # Note: Strategies should not include "name" field - only "type" and "namespaces"
+        # Format strategies using StrategyType constants (matches scripts/manage_memory.py)
+        if not MEMORY_AVAILABLE or StrategyType is None:
+            raise RuntimeError("AgentCore Memory is not available")
+        
         try:
+            strategies = [
+                {
+                    StrategyType.SUMMARY.value: {
+                        "name": "SessionSummarizer",
+                        "description": "Captures summaries of conversations",
+                        "namespaces": ["/summaries/{actorId}/{sessionId}"]
+                    }
+                },
+                {
+                    StrategyType.USER_PREFERENCE.value: {
+                        "name": "UserPreferences",
+                        "description": "Captures user preferences and behavior",
+                        "namespaces": ["/preferences/{actorId}"]
+                    }
+                },
+                {
+                    StrategyType.SEMANTIC.value: {
+                        "name": "SemanticMemory",
+                        "description": "Stores factual information using vector embeddings",
+                        "namespaces": ["/semantic/{actorId}"]
+                    }
+                }
+            ]
+            
             memory = client.create_memory(
                 name=name,
                 description="Memory resource for voice agent with short-term and long-term memory",
-                strategies=[
-                    {
-                        "type": "summaryMemoryStrategy",
-                        "namespaces": ["/summaries/{actorId}/{sessionId}"]
-                    },
-                    {
-                        "type": "userPreferenceMemoryStrategy",
-                        "namespaces": ["/preferences/{actorId}"]
-                    },
-                    {
-                        "type": "semanticMemoryStrategy",
-                        "namespaces": ["/semantic/{actorId}"]
-                    }
-                ]
+                strategies=strategies
             )
             self.memory_id = memory.get("memoryId")
             self._memory_resource = memory

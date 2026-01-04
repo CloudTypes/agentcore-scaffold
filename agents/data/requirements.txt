@@ -1,0 +1,4 @@
+# Data agent dependencies
+# Shared dependencies are in agents/shared/requirements.txt
+strands-agents[a2a]>=1.20.0
+
