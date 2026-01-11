@@ -16,13 +16,14 @@ class ServiceDiscovery:
     def _load_endpoints(self):
         """Load agent endpoints from environment or service discovery."""
         if self.environment == "development":
-            # Local development - use docker-compose service names with A2A port 9000
+            # Local development - check if running in Docker or locally
+            # If VISION_AGENT_URL is set, use it; otherwise try localhost first, then Docker service name
             self._endpoints = {
-                "orchestrator": os.getenv("ORCHESTRATOR_URL", "http://orchestrator:9000"),
-                "vision": os.getenv("VISION_AGENT_URL", "http://vision:9000"),
-                "document": os.getenv("DOCUMENT_AGENT_URL", "http://document:9000"),
-                "data": os.getenv("DATA_AGENT_URL", "http://data:9000"),
-                "tool": os.getenv("TOOL_AGENT_URL", "http://tool:9000")
+                "orchestrator": os.getenv("ORCHESTRATOR_URL", "http://localhost:9005"),  # A2A port from docker-compose
+                "vision": os.getenv("VISION_AGENT_URL", "http://localhost:9001"),  # Port 9001 from docker-compose
+                "document": os.getenv("DOCUMENT_AGENT_URL", "http://localhost:9002"),
+                "data": os.getenv("DATA_AGENT_URL", "http://localhost:9003"),
+                "tool": os.getenv("TOOL_AGENT_URL", "http://localhost:9004")
             }
         else:
             # Production - use environment variables set by CDK

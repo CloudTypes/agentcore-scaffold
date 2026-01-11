@@ -9,11 +9,13 @@ from typing import Dict, Optional, Any
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
 from strands import Agent
 from strands.multiagent.a2a import A2AServer
 from strands.tools import tool
 from agents.orchestrator.agent import OrchestratorAgent
 from agents.orchestrator.a2a_client import A2AClient
+from agents.shared.observability import sanitize_for_logging
 
 # Import memory and auth modules (from src/)
 project_root = Path(__file__).parent.parent.parent
@@ -26,6 +28,31 @@ from config.runtime import get_config
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Disable FastAPI and uvicorn loggers to reduce logging noise
+# Note: This doesn't prevent Pydantic validation errors from being printed
+# Those appear to be printed before our code can intercept them
+for logger_name in ['fastapi', 'uvicorn', 'uvicorn.error', 'uvicorn.access']:
+    logging.getLogger(logger_name).disabled = True
+
+# Override Pydantic ValidationError string representation to sanitize base64 data
+try:
+    from pydantic_core import ValidationError as PydanticValidationError
+    
+    # Store original method
+    original_str = PydanticValidationError.__str__
+    
+    def sanitized_str(self):
+        """Override Pydantic's __str__ to sanitize base64"""
+        original = original_str(self)
+        # Truncate long base64-like strings in the output
+        return re.sub(r'[A-Za-z0-9+/=]{200,}', '<base64_data_truncated>', original)
+    
+    # Apply the override
+    PydanticValidationError.__str__ = sanitized_str
+except ImportError:
+    # pydantic_core may not be available in all environments
+    logger.warning("Could not import pydantic_core.ValidationError - base64 sanitization in error messages may not work.")
 
 
 class MemoryIntegratedOrchestrator:
@@ -371,6 +398,43 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Disable FastAPI's automatic validation error logging to reduce logging noise
+fastapi_logger = logging.getLogger("fastapi")
+fastapi_logger.disabled = True
+
+
+def sanitize_base64_in_dict(obj, max_length=100):
+    """Recursively sanitize base64 strings in dictionaries"""
+    if isinstance(obj, dict):
+        return {k: sanitize_base64_in_dict(v, max_length) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize_base64_in_dict(item, max_length) for item in obj]
+    elif isinstance(obj, str):
+        # Check if it looks like base64 and is long
+        if len(obj) > max_length and re.match(r'^[A-Za-z0-9+/=]+$', obj):
+            return f"<base64_data_{len(obj)}_bytes>"
+        return obj
+    return obj
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Custom handler that sanitizes validation errors before logging"""
+    # Sanitize the errors before they get logged
+    sanitized_errors = []
+    for error in exc.errors():
+        sanitized_error = sanitize_base64_in_dict(error)
+        sanitized_errors.append(sanitized_error)
+    
+    # Log the sanitized version
+    logger.error(f"Validation error on {request.url.path}: {sanitized_errors}")
+    
+    # Return clean response without exposing base64 data
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": "Validation error - check request format"}
+    )
+
 # Configuration
 config = get_config()
 MEMORY_ENABLED = config.get_config_value("MEMORY_ENABLED", "false").lower() == "true"
@@ -607,6 +671,226 @@ async def chat(
         )
 
 
+@app.post("/api/vision/presigned-url")
+async def get_presigned_url(
+    request: Request,
+    user: Dict[str, Any] = Depends(get_current_user)
+) -> Dict[str, str]:
+    """Generate S3 presigned URL for file upload."""
+    import boto3
+    from datetime import datetime, timedelta
+    import uuid
+    import os
+    
+    try:
+        body = await request.json()
+        file_name = body.get("fileName")
+        file_type = body.get("fileType")
+        
+        if not file_name or not file_type:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="fileName and fileType are required"
+            )
+        
+        # Validate file type
+        accepted_types = [
+            "image/jpeg", "image/png", "image/gif", "image/webp",
+            "video/mp4", "video/quicktime", "video/x-matroska", "video/webm",
+            "video/x-flv", "video/mpeg", "video/x-ms-wmv", "video/3gpp"
+        ]
+        if file_type not in accepted_types:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported file type: {file_type}"
+            )
+        
+        s3_bucket = os.getenv("S3_VISION_BUCKET", "agentcore-vision-uploads")
+        s3_prefix = os.getenv("S3_UPLOAD_PREFIX", "uploads/")
+        expiry = int(os.getenv("VISION_PRESIGNED_URL_EXPIRY", "3600"))
+        
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        unique_id = str(uuid.uuid4())[:8]
+        file_ext = file_name.split('.')[-1] if '.' in file_name else ''
+        s3_key = f"{s3_prefix}{timestamp}-{unique_id}.{file_ext}" if file_ext else f"{s3_prefix}{timestamp}-{unique_id}"
+        s3_uri = f"s3://{s3_bucket}/{s3_key}"
+        
+        s3_client = boto3.client('s3')
+        upload_url = s3_client.generate_presigned_url(
+            'put_object',
+            Params={'Bucket': s3_bucket, 'Key': s3_key, 'ContentType': file_type},
+            ExpiresIn=expiry
+        )
+        
+        return {
+            "uploadUrl": upload_url,
+            "s3Uri": s3_uri,
+            "key": s3_key
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating presigned URL: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error generating presigned URL: {str(e)}"
+        )
+
+
+@app.post("/api/vision")
+async def vision_analysis(
+    request: Request,
+    user: Dict[str, Any] = Depends(get_current_user)
+) -> Dict[str, Any]:
+    """
+    Analyze image or video via orchestrator routing to vision agent.
+    
+    Accepts multimodal content (image/video) and routes to vision agent via A2A.
+    """
+    global orchestrator_agent
+    if not orchestrator_agent:
+        orchestrator_agent = create_orchestrator_agent()
+    
+    try:
+        import time
+        body = await request.json()
+        prompt = body.get("prompt") or body.get("message")
+        media_type = body.get("mediaType") or body.get("media_type", "image")
+        base64_data = body.get("base64Data")
+        mime_type = body.get("mimeType", "image/jpeg")
+        s3_uri = body.get("s3Uri")
+        session_id = body.get("session_id")
+        
+        if not prompt:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Missing prompt"
+            )
+        
+        # Extract format from mime type
+        media_format = "jpeg"
+        if mime_type:
+            media_format = mime_type.split("/")[-1]
+            if media_format == "jpg":
+                media_format = "jpeg"
+        
+        # Clean base64 data: strip data URI prefix if present
+        if base64_data:
+            if base64_data.startswith('data:'):
+                # Strip data URI prefix if present
+                base64_data = base64_data.split(',', 1)[1]
+        
+        # Build media_content for A2A call
+        media_content = None
+        if media_type == "image":
+            media_content = {
+                "type": "image",
+                "image": {
+                    "format": media_format,
+                    "source": {}
+                }
+            }
+            
+            if base64_data:
+                # Ensure it's a clean base64 string (no data URI prefix)
+                media_content["image"]["source"]["base64"] = base64_data
+            elif s3_uri:
+                media_content["image"]["source"]["s3Location"] = {"uri": s3_uri}
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="No image data provided (base64 or S3 URI required)"
+                )
+        elif media_type == "video":
+            media_content = {
+                "type": "video",
+                "video": {
+                    "format": media_format,
+                    "source": {}
+                }
+            }
+            
+            if base64_data:
+                media_content["video"]["source"]["base64"] = base64_data
+            elif s3_uri:
+                media_content["video"]["source"]["s3Location"] = {"uri": s3_uri}
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="No video data provided (base64 or S3 URI required)"
+                )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported media type: {media_type}"
+            )
+        
+        # Get user context
+        actor_id = user.get("sub", user.get("email", "default"))
+        if not session_id:
+            session_id = f"vision-{actor_id}-{int(time.time())}"
+        
+        # Log sanitized request
+        logger.info(f"Vision request: prompt='{prompt[:50]}...', format={media_format}, has_base64={bool(base64_data)}, has_s3={bool(s3_uri)}")
+        
+        # Call vision agent directly via A2A with multimodal content
+        # The orchestrator_agent is a MemoryIntegratedOrchestrator which has a2a_client
+        a2a_client = orchestrator_agent.a2a_client
+        
+        result = await a2a_client.call_agent_with_media(
+            agent_name="vision",
+            task=prompt,
+            media_content=media_content,
+            user_id=actor_id,
+            session_id=session_id
+        )
+        
+        # Parse result - extract text content
+        # The A2A client's _extract_response_content should return a string,
+        # but if the vision agent returns JSON, we need to parse and extract text
+        import json
+        
+        logger.debug(f"Vision analysis result type: {type(result)}, value preview: {str(result)[:200]}")
+        
+        # If result is already a string (from _extract_response_content)
+        if isinstance(result, str):
+            # Try to parse as JSON in case it's a JSON string
+            try:
+                parsed = json.loads(result)
+                logger.debug(f"Parsed JSON result type: {type(parsed)}")
+                # If it's a dict, extract text field
+                if isinstance(parsed, dict):
+                    text = parsed.get("text", str(parsed))
+                    logger.debug(f"Extracted text length: {len(text)}")
+                    return {"text": text, "usage": parsed.get("usage")}
+                else:
+                    # If parsed is not a dict, use it as text
+                    return {"text": str(parsed), "usage": None}
+            except (json.JSONDecodeError, TypeError) as e:
+                # Not JSON, treat as plain text
+                logger.debug(f"Result is not JSON, treating as plain text: {e}")
+                return {"text": result, "usage": None}
+        elif isinstance(result, dict):
+            # Already a dict, extract text field
+            text = result.get("text", str(result))
+            logger.debug(f"Result is dict, extracted text length: {len(text)}")
+            return {"text": text, "usage": result.get("usage")}
+        else:
+            # Other types, convert to text
+            logger.debug(f"Result is other type, converting to string")
+            return {"text": str(result), "usage": None}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing vision request: {str(e)}", exc_info=False)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error processing vision request: {str(e)}"
+        )
+
+
 def main():
     """
     Start orchestrator A2A server and FastAPI HTTP server.
@@ -652,7 +936,22 @@ def main():
     # Note: If both use port 9000, A2A server will handle A2A requests,
     # and FastAPI will handle HTTP REST requests (they use different protocols)
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=http_port)
+    import logging as uvicorn_logging
+    
+    # COMPLETELY DISABLE uvicorn logging to prevent base64 data in logs
+    uvicorn_logger = uvicorn_logging.getLogger("uvicorn")
+    uvicorn_logger.disabled = True
+    uvicorn_logger = uvicorn_logging.getLogger("uvicorn.access")
+    uvicorn_logger.disabled = True
+    uvicorn_logger = uvicorn_logging.getLogger("uvicorn.error")
+    uvicorn_logger.disabled = True
+    
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=http_port,
+        log_config=None  # Disable uvicorn's default logging config
+    )
 
 
 if __name__ == "__main__":

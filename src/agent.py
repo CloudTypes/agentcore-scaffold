@@ -13,6 +13,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Depends, H
 from fastapi.responses import JSONResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+# Vision routes are handled by the orchestrator agent, not the voice agent
 from strands.experimental.bidi.agent import BidiAgent
 from strands.experimental.bidi.models.nova_sonic import BidiNovaSonicModel
 from strands.experimental.bidi.types.io import BidiInput, BidiOutput
@@ -636,6 +637,9 @@ async def health_check():
             "version": "1.0.0"
         }
     )
+
+
+# Vision routes are handled by the orchestrator agent (port 9000), not the voice agent
 
 
 @app.post("/api/sessions")

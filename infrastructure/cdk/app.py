@@ -8,6 +8,7 @@ import aws_cdk as cdk
 from agentcore_stack import AgentCoreStack
 from agentcore_runtime_stack import AgentCoreRuntimeStack
 from multi_agent_stack import MultiAgentStack
+from vision_stack import VisionInfrastructureStack
 # Memory stack removed - use scripts/manage_memory.py instead
 # from agentcore_memory_stack import AgentCoreMemoryStack
 
@@ -85,6 +86,14 @@ multi_agent_stack = MultiAgentStack(
 
 # Multi-agent stack depends on base stack
 multi_agent_stack.add_dependency(base_stack)
+
+# Create Vision Infrastructure stack
+vision_stack = VisionInfrastructureStack(
+    app,
+    f"AgentCoreVision-{env_name}",
+    env=env,
+    description=f"Infrastructure for AgentCore Vision Agent capabilities ({env_name})"
+)
 
 app.synth()
 

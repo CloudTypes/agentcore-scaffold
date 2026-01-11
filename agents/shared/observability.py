@@ -2,6 +2,7 @@
 
 import logging
 import time
+import re
 from typing import Optional, Dict, Any
 from functools import wraps
 
@@ -99,6 +100,33 @@ class AgentLogger:
             },
             exc_info=True
         )
+
+
+def sanitize_for_logging(obj: Any, max_base64_length: int = 100) -> Any:
+    """
+    Recursively sanitize objects for logging by truncating base64 strings.
+    
+    Args:
+        obj: Object to sanitize (dict, list, str, bytes, or other)
+        max_base64_length: Maximum length before truncating base64-like strings
+        
+    Returns:
+        Sanitized copy of the object
+    """
+    if isinstance(obj, dict):
+        return {k: sanitize_for_logging(v, max_base64_length) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize_for_logging(item, max_base64_length) for item in obj]
+    elif isinstance(obj, str):
+        # Check if it looks like base64 and is long
+        if len(obj) > max_base64_length and re.match(r'^[A-Za-z0-9+/=]+$', obj):
+            return f"<base64_data_{len(obj)}_chars>"
+        return obj
+    elif isinstance(obj, bytes):
+        if len(obj) > max_base64_length:
+            return f"<binary_data_{len(obj)}_bytes>"
+        return obj
+    return obj
 
 
 def track_latency(agent_name: str):
