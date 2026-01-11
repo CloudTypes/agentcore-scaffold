@@ -57,8 +57,31 @@ class OAuth2Middleware:
             )
 
 
-# Global middleware instance
-_oauth2_middleware = OAuth2Middleware()
+# Global middleware instance (lazy initialization)
+_oauth2_middleware: Optional[OAuth2Middleware] = None
+
+
+def _get_oauth2_middleware() -> OAuth2Middleware:
+    """
+    Get or create the OAuth2 middleware instance (lazy initialization).
+    
+    Returns:
+        OAuth2Middleware instance
+        
+    Raises:
+        ValueError: If Google OAuth2 credentials are not configured
+    """
+    global _oauth2_middleware
+    if _oauth2_middleware is None:
+        try:
+            _oauth2_middleware = OAuth2Middleware()
+        except ValueError as e:
+            logger.error(f"Failed to initialize OAuth2 middleware: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="OAuth2 authentication is not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET."
+            )
+    return _oauth2_middleware
 
 
 async def get_current_user(request: Request) -> Dict[str, Any]:
@@ -70,6 +93,10 @@ async def get_current_user(request: Request) -> Dict[str, Any]:
         
     Returns:
         User information dictionary
+        
+    Raises:
+        HTTPException: If authentication fails or OAuth2 is not configured
     """
-    return await _oauth2_middleware.get_current_user(request)
+    middleware = _get_oauth2_middleware()
+    return await middleware.get_current_user(request)
 

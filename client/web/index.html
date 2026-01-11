@@ -152,6 +152,21 @@
             Status: Disconnected
         </div>
         
+        <!-- Mode Toggle -->
+        <div style="margin: 20px 0; padding: 15px; background: #f8f9fa; border-radius: 5px;">
+            <label style="display: block; margin-bottom: 10px; font-weight: bold;">Mode:</label>
+            <div style="display: flex; gap: 15px; align-items: center;">
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="radio" name="mode" value="voice" id="voiceModeRadio" checked onchange="toggleMode('voice')" style="margin-right: 5px;">
+                    <span>🎤 Voice Mode</span>
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="radio" name="mode" value="text" id="textModeRadio" onchange="toggleMode('text')" style="margin-right: 5px;">
+                    <span>⌨️ Text Mode</span>
+                </label>
+            </div>
+        </div>
+        
         <div class="controls">
             <button id="connectBtn" onclick="connect()" disabled>Connect</button>
             <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>

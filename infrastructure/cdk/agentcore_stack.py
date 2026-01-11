@@ -142,6 +142,19 @@ class AgentCoreStack(Stack):
             )
         )
 
+        agent_auth_secret = secretsmanager.Secret(
+            self,
+            "AgentAuthSecret",
+            secret_name="agentcore/voice-agent/agent-auth-secret",
+            description="Secret key for inter-agent authentication (A2A JWT signing)",
+            generate_secret_string=secretsmanager.SecretStringGenerator(
+                secret_string_template='{"secret_key": ""}',
+                generate_string_key="secret_key",
+                password_length=64,
+                exclude_characters='"'
+            )
+        )
+
         memory_id_secret = secretsmanager.Secret(
             self,
             "MemoryIdSecret",
@@ -157,6 +170,7 @@ class AgentCoreStack(Stack):
         # Grant read access to secrets
         google_oauth_secret.grant_read(agentcore_role)
         jwt_secret.grant_read(agentcore_role)
+        agent_auth_secret.grant_read(agentcore_role)
         memory_id_secret.grant_read(agentcore_role)
 
         # CloudWatch Log Group
@@ -181,6 +195,7 @@ class AgentCoreStack(Stack):
         self.ecr_repo = ecr_repo
         self.agentcore_role = agentcore_role
         self.memory_id_secret = memory_id_secret
+        self.agent_auth_secret = agent_auth_secret
 
         # Outputs
         CfnOutput(
@@ -211,6 +226,13 @@ class AgentCoreStack(Stack):
             "JWTSecretARN",
             value=jwt_secret.secret_arn,
             description="Secrets Manager ARN for JWT secret"
+        )
+
+        CfnOutput(
+            self,
+            "AgentAuthSecretARN",
+            value=agent_auth_secret.secret_arn,
+            description="Secrets Manager ARN for agent authentication secret"
         )
 
         CfnOutput(

@@ -16,14 +16,67 @@ let lastAgentMessage = null;
 // Authentication state
 let authToken = null;
 let currentUser = null;
-// Determine API base URL - handle file:// protocol for local HTML files
+
+// Session and mode state
+let currentSessionId = null;
+let currentMode = 'voice'; // 'voice' or 'text'
+let orchestratorConnected = false;
+
+/**
+ * Get the base URL for the voice agent API.
+ * 
+ * Supports runtime configuration via window.API_BASE for CloudFront/API Gateway
+ * deployments. Falls back to current origin for same-origin requests, or
+ * localhost:8080 for local file:// protocol usage.
+ * 
+ * @returns {string} Base URL for voice agent API (e.g., "https://api.example.com" or "http://localhost:8080")
+ */
 const getApiBase = () => {
+    // Support runtime configuration (for CloudFront/API Gateway)
+    if (window.API_BASE) return window.API_BASE;
     if (window.location.protocol === 'file:' || !window.location.origin || window.location.origin === 'null') {
         return 'http://localhost:8080';
     }
     return window.location.origin;
 };
+
+/**
+ * Get the base URL for the orchestrator agent API.
+ * 
+ * Supports runtime configuration via window.ORCHESTRATOR_BASE. If not configured,
+ * derives from API_BASE by replacing port 8080 with 9000.
+ * 
+ * @returns {string} Base URL for orchestrator agent API (e.g., "https://api.example.com:9000" or "http://localhost:9000")
+ */
+const getOrchestratorBase = () => {
+    // Support runtime configuration
+    if (window.ORCHESTRATOR_BASE) return window.ORCHESTRATOR_BASE;
+    // Default: derive from API_BASE (replace port 8080 with 9000)
+    const apiBase = getApiBase();
+    return apiBase.replace(':8080', ':9000').replace('8080', '9000');
+};
+
+/**
+ * Get the base URL for WebSocket connections.
+ * 
+ * Supports runtime configuration via window.WS_BASE. If not configured,
+ * converts HTTP/HTTPS protocol to WS/WSS protocol from API_BASE.
+ * 
+ * @returns {string} WebSocket base URL (e.g., "wss://api.example.com" or "ws://localhost:8080")
+ */
+const getWsBase = () => {
+    // Support runtime configuration
+    if (window.WS_BASE) return window.WS_BASE;
+    // Convert HTTP/HTTPS to WS/WSS
+    const apiBase = getApiBase();
+    const wsProtocol = apiBase.startsWith('https') ? 'wss:' : 'ws:';
+    const wsHost = apiBase.replace(/^https?:/, '').replace(/^\/\//, '');
+    return `${wsProtocol}//${wsHost}`;
+};
+
 const API_BASE = getApiBase();
+const ORCHESTRATOR_BASE = getOrchestratorBase();
+const WS_BASE = getWsBase();
 
 const statusEl = document.getElementById('status');
 const messagesEl = document.getElementById('messages');
@@ -455,18 +508,65 @@ window.onclick = function(event) {
     }
 }
 
-// WebSocket connection
-function connect() {
+/**
+ * Create a new session or return existing session ID.
+ * 
+ * This function checks if a session already exists. If it does, it returns the
+ * existing session_id to maintain conversation continuity. If not, it creates
+ * a new session by calling the /api/sessions endpoint.
+ * 
+ * @async
+ * @returns {Promise<string>} The session ID (either existing or newly created)
+ * @throws {Error} If session creation fails or authentication is invalid
+ */
+async function createSession() {
+    if (currentSessionId) {
+        return currentSessionId; // Reuse existing session
+    }
+    
+    if (!authToken) {
+        throw new Error('Please login first');
+    }
+    
+    const response = await fetch(`${API_BASE}/api/sessions`, {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${authToken}` // Use header, not query param
+        }
+    });
+    
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to create session: ${errorText}`);
+    }
+    
+    const data = await response.json();
+    currentSessionId = data.session_id;
+    return currentSessionId;
+}
+
+/**
+ * Connect to voice agent via WebSocket.
+ * 
+ * Creates a session if needed, then establishes a WebSocket connection to the
+ * voice agent for bi-directional audio streaming. The session_id is passed
+ * as a query parameter to maintain conversation context.
+ * 
+ * @async
+ * @returns {Promise<void>}
+ * @throws {Error} If session creation fails or WebSocket connection fails
+ */
+async function connectVoiceMode() {
     if (!authToken) {
         alert('Please login first');
         return;
     }
     
-    // Convert HTTP URL to WebSocket URL
-    const wsProtocol = API_BASE.startsWith('https') ? 'wss:' : 'ws:';
-    const wsHost = API_BASE.replace(/^https?:/, '').replace(/^\/\//, '');
-    const wsUrl = `${wsProtocol}//${wsHost}/ws?token=${encodeURIComponent(authToken)}`;
+    await createSession(); // Creates only if needed
     
+    // WebSocket connection - use configurable WS_BASE
+    // Note: WebSocket may still use query params for token (API Gateway WebSocket API supports this)
+    const wsUrl = `${WS_BASE}/ws?token=${encodeURIComponent(authToken)}&session_id=${currentSessionId}`;
     websocket = new WebSocket(wsUrl);
     
     websocket.onopen = async () => {
@@ -509,12 +609,96 @@ function connect() {
     };
 }
 
+/**
+ * Connect to orchestrator agent in text mode.
+ * 
+ * Creates a session if needed, then enables text input UI. No WebSocket
+ * connection is established for text mode - communication happens via
+ * HTTP POST requests to the orchestrator agent.
+ * 
+ * @async
+ * @returns {Promise<void>}
+ * @throws {Error} If session creation fails
+ */
+async function connectTextMode() {
+    if (!authToken) {
+        alert('Please login first');
+        return;
+    }
+    
+    await createSession(); // Creates only if needed
+    
+    // No WebSocket needed, just enable UI
+    updateStatus('connected');
+    orchestratorConnected = true;
+    connectBtn.disabled = true;
+    disconnectBtn.disabled = false;
+    muteBtn.disabled = true; // Mute button not applicable in text mode
+    sendTextBtn.disabled = false;
+    updateInputModeIndicator('text');
+}
+
+/**
+ * Switch between voice and text modes while maintaining session continuity.
+ * 
+ * This function handles mode switching by disconnecting the current connection
+ * (if active), updating the mode, and reconnecting in the new mode using the
+ * existing session_id. This preserves conversation history and context across
+ * mode switches.
+ * 
+ * @async
+ * @param {string} newMode - The mode to switch to ('voice' or 'text')
+ * @returns {Promise<void>}
+ */
+async function toggleMode(newMode) {
+    const wasConnected = websocket && websocket.readyState === WebSocket.OPEN || orchestratorConnected;
+    
+    if (wasConnected) {
+        disconnect(); // Clean up current connection
+    }
+    
+    currentMode = newMode;
+    
+    // Update radio button state
+    if (newMode === 'voice') {
+        document.getElementById('voiceModeRadio').checked = true;
+        document.getElementById('textModeRadio').checked = false;
+    } else {
+        document.getElementById('voiceModeRadio').checked = false;
+        document.getElementById('textModeRadio').checked = true;
+    }
+    
+    if (wasConnected) {
+        // Reconnect in new mode using existing session
+        if (newMode === 'voice') {
+            await connectVoiceMode();
+        } else {
+            await connectTextMode();
+        }
+    }
+}
+
+// WebSocket connection - routes to appropriate mode
+function connect() {
+    if (currentMode === 'voice') {
+        connectVoiceMode();
+    } else {
+        connectTextMode();
+    }
+}
+
 function disconnect() {
     stopRecording();
     if (websocket) {
         websocket.close();
         websocket = null;
     }
+    orchestratorConnected = false;
+    connectBtn.disabled = false;
+    disconnectBtn.disabled = true;
+    muteBtn.disabled = true;
+    sendTextBtn.disabled = true;
+    updateStatus('disconnected');
 }
 
 // Audio recording - continuous streaming for bi-directional conversation
@@ -628,51 +812,108 @@ function sendAudio(base64PCM) {
     }
 }
 
+/**
+ * Send a text message to the orchestrator agent and display the response.
+ * 
+ * Sends a POST request to the orchestrator's /api/chat endpoint with the
+ * message and current session_id. The response is displayed in the chat UI.
+ * 
+ * @async
+ * @param {string} message - The text message to send to the orchestrator
+ * @returns {Promise<void>}
+ * @throws {Error} If the request fails or authentication is invalid
+ */
+async function sendTextToOrchestrator(message) {
+    if (!authToken) {
+        addMessage('Error', 'Please login first', 'error');
+        return;
+    }
+    
+    if (!currentSessionId) {
+        addMessage('Error', 'Session not created. Please connect first.', 'error');
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${ORCHESTRATOR_BASE}/api/chat`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${authToken}` // Use header for security (works through proxies)
+            },
+            body: JSON.stringify({
+                message: message,
+                session_id: currentSessionId
+            })
+        });
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Failed to send message: ${errorText}`);
+        }
+        
+        const data = await response.json();
+        addMessage('Agent', data.response, 'agent');
+    } catch (error) {
+        console.error('Error sending text to orchestrator:', error);
+        addMessage('Error', `Failed to send message: ${error.message}`, 'error');
+    }
+}
+
 function sendText() {
     const text = textInput.value.trim();
     if (!text) {
         return;  // Don't send empty messages
     }
     
-    if (!websocket || websocket.readyState !== WebSocket.OPEN) {
-        addMessage('Error', 'WebSocket not connected. Please connect first.', 'error');
-        return;
-    }
-    
-    try {
-        // Pause audio recording temporarily to avoid interference
-        const wasMuted = isMuted;
-        isMuted = true;
-        lastInputWasText = true;
-        
-        // Update mode indicator
-        updateInputModeIndicator('text');
-        
-        // Send text message
-        websocket.send(JSON.stringify({
-            text: text,
-            input_type: 'text'  // Explicitly mark as text input
-        }));
-        
+    // Route based on current mode
+    if (currentMode === 'text') {
+        // Send to orchestrator via HTTP
         addMessage('User', text, 'user');
         textInput.value = '';
+        sendTextToOrchestrator(text);
+    } else {
+        // Send to voice agent via WebSocket (existing behavior)
+        if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+            addMessage('Error', 'WebSocket not connected. Please connect first.', 'error');
+            return;
+        }
         
-        // Resume audio after a brief delay (allow text to be processed)
-        setTimeout(() => {
-            isMuted = wasMuted;
-            // Update mode indicator back to voice or mixed
-            if (!wasMuted) {
-                updateInputModeIndicator('mixed');
-            } else {
-                updateInputModeIndicator('voice');
-            }
-        }, 500);
-    } catch (error) {
-        console.error('Error sending text message:', error);
-        addMessage('Error', 'Failed to send text message. Please try again.', 'error');
-        // Reset mute state on error
-        isMuted = false;
-        updateInputModeIndicator('mixed');
+        try {
+            // Pause audio recording temporarily to avoid interference
+            const wasMuted = isMuted;
+            isMuted = true;
+            lastInputWasText = true;
+            
+            // Update mode indicator
+            updateInputModeIndicator('text');
+            
+            // Send text message
+            websocket.send(JSON.stringify({
+                text: text,
+                input_type: 'text'  // Explicitly mark as text input
+            }));
+            
+            addMessage('User', text, 'user');
+            textInput.value = '';
+            
+            // Resume audio after a brief delay (allow text to be processed)
+            setTimeout(() => {
+                isMuted = wasMuted;
+                // Update mode indicator back to voice or mixed
+                if (!wasMuted) {
+                    updateInputModeIndicator('mixed');
+                } else {
+                    updateInputModeIndicator('voice');
+                }
+            }, 500);
+        } catch (error) {
+            console.error('Error sending text message:', error);
+            addMessage('Error', 'Failed to send text message. Please try again.', 'error');
+            // Reset mute state on error
+            isMuted = false;
+            updateInputModeIndicator('mixed');
+        }
     }
 }
 
@@ -855,17 +1096,21 @@ async function playAudioChunk(base64PCM, sampleRate = 16000) {
 // UI helpers
 function updateStatus(status) {
     statusEl.className = `status ${status}`;
-    statusEl.textContent = `Status: ${status.charAt(0).toUpperCase() + status.slice(1)}`;
+    const modeText = currentMode === 'voice' ? ' (Voice Mode)' : ' (Text Mode)';
+    statusEl.textContent = `Status: ${status.charAt(0).toUpperCase() + status.slice(1)}${modeText}`;
 }
 
 function updateInputModeIndicator(mode) {
     const indicator = document.getElementById('inputModeIndicator');
     if (!indicator) return;
     
-    if (mode === 'text') {
+    // Use currentMode if mode is not explicitly provided
+    const displayMode = mode || currentMode;
+    
+    if (displayMode === 'text') {
         indicator.textContent = '⌨️ Text Mode';
         indicator.style.background = '#fff3e0';
-    } else if (mode === 'voice') {
+    } else if (displayMode === 'voice') {
         indicator.textContent = '🎤 Voice Mode';
         indicator.style.background = '#e3f2fd';
     } else {
@@ -1045,7 +1290,12 @@ function exportDiagnostics() {
     URL.revokeObjectURL(url);
 }
 
-// Initialize authentication on page load
+// Initialize authentication and mode on page load
 window.addEventListener('DOMContentLoaded', () => {
     checkAuth();
+    // Initialize mode indicator
+    updateInputModeIndicator(currentMode);
+    // Set radio button to match current mode
+    document.getElementById('voiceModeRadio').checked = (currentMode === 'voice');
+    document.getElementById('textModeRadio').checked = (currentMode === 'text');
 });

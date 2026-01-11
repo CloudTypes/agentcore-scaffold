@@ -1,0 +1,7 @@
+# Shared dependencies for all agents
+pydantic>=2.12.5
+httpx>=0.28.1
+strands-agents[a2a]>=1.20.0
+bedrock-agentcore>=1.1.2
+boto3>=1.42.17
+

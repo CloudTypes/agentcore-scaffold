@@ -30,37 +30,21 @@ from strands.experimental.bidi.types.events import (
 from strands.types._events import ToolUseStreamEvent
 from dotenv import load_dotenv
 
-# Import custom tools
+# Import custom tools (from src/tools)
+import sys
+from pathlib import Path
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root / "src"))
 from tools.calculator import calculator
 from tools.weather import weather_api
 from tools.database import database_query
 
-# Import memory and auth modules
-try:
-    from .memory.client import MemoryClient
-    from .memory.session_manager import MemorySessionManager
-    from .config.runtime import get_config
-    # Optional OAuth imports - may fail if google-auth is not installed
-    try:
-        from .auth.google_oauth2 import GoogleOAuth2Handler
-        from .auth.oauth2_middleware import get_current_user
-    except ImportError:
-        # OAuth dependencies not available (e.g., in test environment)
-        GoogleOAuth2Handler = None
-        get_current_user = None
-except ImportError:
-    # Fallback for direct execution
-    from memory.client import MemoryClient
-    from memory.session_manager import MemorySessionManager
-    from config.runtime import get_config
-    # Optional OAuth imports - may fail if google-auth is not installed
-    try:
-        from auth.google_oauth2 import GoogleOAuth2Handler
-        from auth.oauth2_middleware import get_current_user
-    except ImportError:
-        # OAuth dependencies not available (e.g., in test environment)
-        GoogleOAuth2Handler = None
-        get_current_user = None
+# Import memory and auth modules (from src/)
+from memory.client import MemoryClient
+from memory.session_manager import MemorySessionManager
+from auth.google_oauth2 import GoogleOAuth2Handler
+from auth.oauth2_middleware import get_current_user
+from config.runtime import get_config
 
 # Load environment variables
 load_dotenv()
@@ -111,8 +95,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Get the project root directory (assuming src/agent.py is in src/)
-project_root = Path(__file__).parent.parent
+# Get the project root directory (agents/voice/app.py -> agents/voice -> agents -> project root)
+project_root = Path(__file__).parent.parent.parent
 client_web_path = project_root / "client" / "web"
 
 # Serve static files (JS, CSS) from client/web directory
@@ -142,7 +126,7 @@ if MEMORY_ENABLED:
         memory_client.create_memory_resource()
         logger.info("Memory client initialized")
     except Exception as e:
-        logger.error(f"Failed to initialize memory client: {e}")
+        logger.warning(f"Failed to initialize memory client: {e}. Voice agent will continue without memory features.")
         memory_client = None
 
 # Initialize OAuth2 handler
@@ -610,17 +594,6 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.info("WebSocket session ended")
 
 
-@app.get("/health")
-async def health() -> Dict[str, str]:
-    """
-    Health check endpoint for load balancers and monitoring.
-    
-    Returns:
-        Dict containing service status and name.
-    """
-    return {"status": "healthy", "service": "voice"}
-
-
 @app.get("/ping")
 async def health_check():
     """
@@ -636,53 +609,6 @@ async def health_check():
             "version": "1.0.0"
         }
     )
-
-
-@app.post("/api/sessions")
-async def create_session(
-    request: Request,
-    user: Dict[str, Any] = Depends(get_current_user),
-    session_id: Optional[str] = None
-) -> Dict[str, str]:
-    """
-    Create a new session or reuse an existing session.
-    
-    This endpoint creates a new memory session for the authenticated user.
-    If a session_id is provided in the request body or query parameter, it will
-    reuse that session instead of creating a new one. This allows session continuity
-    when switching between voice and text modes.
-    
-    Args:
-        request: FastAPI request object (may contain session_id in body)
-        user: Authenticated user information from OAuth2 middleware.
-        session_id: Optional session ID from query parameter to reuse. If not provided,
-                   a new session will be created.
-    
-    Returns:
-        Dict containing the session_id.
-        
-    Raises:
-        HTTPException: If authentication fails or memory client is unavailable.
-    """
-    if not memory_client:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Memory not enabled"
-        )
-    
-    # Try to get session_id from request body if not in query param
-    if not session_id:
-        try:
-            body = await request.json()
-            session_id = body.get("session_id")
-        except Exception:
-            pass  # No body or not JSON
-    
-    actor_id = user.get("email", "anonymous")
-    # If session_id provided, reuse it; otherwise create new
-    session_manager = MemorySessionManager(memory_client, actor_id=actor_id, session_id=session_id)
-    await session_manager.initialize()
-    return {"session_id": session_manager.session_id}
 
 
 # Authentication endpoints
@@ -792,6 +718,64 @@ async def query_memories(
             })
     
     return JSONResponse(content={"memories": formatted_memories})
+
+
+@app.get("/health")
+async def health() -> Dict[str, str]:
+    """
+    Health check endpoint for load balancers and monitoring.
+    
+    Returns:
+        Dict containing service status and name.
+    """
+    return {"status": "healthy", "service": "voice"}
+
+
+@app.post("/api/sessions")
+async def create_session(
+    request: Request,
+    user: Dict[str, Any] = Depends(get_current_user),
+    session_id: Optional[str] = None
+) -> Dict[str, str]:
+    """
+    Create a new session or reuse an existing session.
+    
+    This endpoint creates a new memory session for the authenticated user.
+    If a session_id is provided in the request body or query parameter, it will
+    reuse that session instead of creating a new one. This allows session continuity
+    when switching between voice and text modes.
+    
+    Args:
+        request: FastAPI request object (may contain session_id in body)
+        user: Authenticated user information from OAuth2 middleware.
+        session_id: Optional session ID from query parameter to reuse. If not provided,
+                   a new session will be created.
+    
+    Returns:
+        Dict containing the session_id.
+        
+    Raises:
+        HTTPException: If authentication fails or memory client is unavailable.
+    """
+    if not memory_client:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Memory not enabled"
+        )
+    
+    # Try to get session_id from request body if not in query param
+    if not session_id:
+        try:
+            body = await request.json()
+            session_id = body.get("session_id")
+        except Exception:
+            pass  # No body or not JSON
+    
+    actor_id = user.get("email", "anonymous")
+    # If session_id provided, reuse it; otherwise create new
+    session_manager = MemorySessionManager(memory_client, actor_id=actor_id, session_id=session_id)
+    await session_manager.initialize()
+    return {"session_id": session_manager.session_id}
 
 
 @app.get("/api/memory/sessions")

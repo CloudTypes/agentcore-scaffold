@@ -7,9 +7,20 @@ import secrets
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 import jwt
-from google.auth.transport.requests import Request
-from google.oauth2 import id_token
-from google_auth_oauthlib.flow import Flow
+
+# Optional Google OAuth imports - handle missing dependencies gracefully
+try:
+    from google.auth.transport.requests import Request
+    from google.oauth2 import id_token
+    from google_auth_oauthlib.flow import Flow
+    GOOGLE_OAUTH_AVAILABLE = True
+except ImportError:
+    # Google OAuth dependencies not installed (e.g., in test environment)
+    GOOGLE_OAUTH_AVAILABLE = False
+    Request = None
+    id_token = None
+    Flow = None
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -28,6 +39,12 @@ class GoogleOAuth2Handler:
     
     def __init__(self):
         """Initialize OAuth2 handler with configuration from environment."""
+        if not GOOGLE_OAUTH_AVAILABLE:
+            raise ImportError(
+                "Google OAuth2 dependencies are not installed. "
+                "Please install them with: pip install google-auth google-auth-oauthlib"
+            )
+        
         self.client_id = os.getenv("GOOGLE_CLIENT_ID")
         self.client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
         self.redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8080/api/auth/callback")
