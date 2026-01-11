@@ -95,10 +95,16 @@ class MemoryClient:
             )
             
             messages = []
-            for event in events.get("events", [])[:limit]:
+            # Handle both dict response (with "events" key) and list response
+            events_list = events.get("events", []) if isinstance(events, dict) else events
+            for event in events_list[:limit]:
                 # Extract role and content from event
-                event_data = event.get("event", {})
-                messages_data = event_data.get("messages", [])
+                # Handle both dict event and direct event structure
+                if isinstance(event, dict):
+                    event_data = event.get("event", event)
+                else:
+                    event_data = event
+                messages_data = event_data.get("messages", []) if isinstance(event_data, dict) else []
                 
                 for msg in messages_data:
                     if isinstance(msg, tuple) and len(msg) == 2:

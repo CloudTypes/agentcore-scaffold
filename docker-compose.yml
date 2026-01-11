@@ -4,18 +4,33 @@ services:
       context: .
       dockerfile: agents/orchestrator/Dockerfile
     ports:
-      - "9000:9000"
+      - "9000:9000"  # FastAPI HTTP REST API
+      - "9005:9001"  # A2A server for agent-to-agent communication (host:container)
+    env_file:
+      - .env
     environment:
       - ENVIRONMENT=development
       - AGENTCORE_MEMORY_REGION=${AGENTCORE_MEMORY_REGION:-us-west-2}
       - AGENTCORE_MEMORY_ID=${AGENTCORE_MEMORY_ID:-}
       - AWS_REGION=${AWS_REGION:-us-west-2}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-${AWS_REGION:-us-west-2}}
       - AWS_PROFILE=${AWS_PROFILE:-}
-      - ORCHESTRATOR_MODEL=${ORCHESTRATOR_MODEL:-amazon.nova-pro-v1:0}
+      - ORCHESTRATOR_MODEL=${ORCHESTRATOR_MODEL:-us.amazon.nova-pro-v1:0}
+      - ORCHESTRATOR_URL=http://orchestrator:9001  # A2A server port
       - VISION_AGENT_URL=http://vision:9000
       - DOCUMENT_AGENT_URL=http://document:9000
       - DATA_AGENT_URL=http://data:9000
       - TOOL_AGENT_URL=http://tool:9000
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-http://localhost:9000/api/auth/callback}
+      - GOOGLE_WORKSPACE_DOMAIN=${GOOGLE_WORKSPACE_DOMAIN:-}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-}
+      - JWT_ALGORITHM=${JWT_ALGORITHM:-HS256}
+      - JWT_EXPIRATION_MINUTES=${JWT_EXPIRATION_MINUTES:-60}
     depends_on:
       - vision
       - document
@@ -38,6 +53,10 @@ services:
       - AGENTCORE_MEMORY_REGION=${AGENTCORE_MEMORY_REGION:-us-west-2}
       - AGENTCORE_MEMORY_ID=${AGENTCORE_MEMORY_ID:-}
       - AWS_REGION=${AWS_REGION:-us-west-2}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-${AWS_REGION:-us-west-2}}
       - AWS_PROFILE=${AWS_PROFILE:-}
       - VISION_MODEL=${VISION_MODEL:-amazon.nova-canvas-v1:0}
     volumes:
@@ -57,8 +76,12 @@ services:
       - AGENTCORE_MEMORY_REGION=${AGENTCORE_MEMORY_REGION:-us-west-2}
       - AGENTCORE_MEMORY_ID=${AGENTCORE_MEMORY_ID:-}
       - AWS_REGION=${AWS_REGION:-us-west-2}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-${AWS_REGION:-us-west-2}}
       - AWS_PROFILE=${AWS_PROFILE:-}
-      - DOCUMENT_MODEL=${DOCUMENT_MODEL:-amazon.nova-pro-v1:0}
+      - DOCUMENT_MODEL=${DOCUMENT_MODEL:-us.amazon.nova-pro-v1:0}
     volumes:
       # Mount AWS credentials if using AWS_PROFILE
       - ${HOME}/.aws:/root/.aws:ro
@@ -76,8 +99,12 @@ services:
       - AGENTCORE_MEMORY_REGION=${AGENTCORE_MEMORY_REGION:-us-west-2}
       - AGENTCORE_MEMORY_ID=${AGENTCORE_MEMORY_ID:-}
       - AWS_REGION=${AWS_REGION:-us-west-2}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-${AWS_REGION:-us-west-2}}
       - AWS_PROFILE=${AWS_PROFILE:-}
-      - DATA_MODEL=${DATA_MODEL:-amazon.nova-lite-v1:0}
+      - DATA_MODEL=${DATA_MODEL:-us.amazon.nova-lite-v1:0}
     volumes:
       # Mount AWS credentials if using AWS_PROFILE
       - ${HOME}/.aws:/root/.aws:ro
@@ -95,8 +122,12 @@ services:
       - AGENTCORE_MEMORY_REGION=${AGENTCORE_MEMORY_REGION:-us-west-2}
       - AGENTCORE_MEMORY_ID=${AGENTCORE_MEMORY_ID:-}
       - AWS_REGION=${AWS_REGION:-us-west-2}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-${AWS_REGION:-us-west-2}}
       - AWS_PROFILE=${AWS_PROFILE:-}
-      - TOOL_MODEL=${TOOL_MODEL:-amazon.nova-lite-v1:0}
+      - TOOL_MODEL=${TOOL_MODEL:-us.amazon.nova-lite-v1:0}
       - WEATHER_API_KEY=${WEATHER_API_KEY:-}
     volumes:
       # Mount AWS credentials if using AWS_PROFILE

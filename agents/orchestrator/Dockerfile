@@ -10,6 +10,9 @@ RUN pip install --no-cache-dir -r requirements.txt -r shared-requirements.txt
 # Copy shared code
 COPY agents/shared /app/agents/shared
 
+# Copy application code (memory, auth, config modules)
+COPY src/ ./src/
+
 # Copy orchestrator code
 COPY agents/orchestrator /app/agents/orchestrator
 

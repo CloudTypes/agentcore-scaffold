@@ -1,4 +1,11 @@
 # Orchestrator agent dependencies
 # Shared dependencies are in agents/shared/requirements.txt
 strands-agents[a2a]>=1.20.0
+# FastAPI and HTTP server dependencies
+fastapi>=0.128.0
+uvicorn[standard]>=0.40.0
+# Authentication dependencies
+google-auth>=2.23.0
+google-auth-oauthlib>=1.1.0
+PyJWT>=2.8.0
 

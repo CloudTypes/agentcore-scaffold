@@ -12,6 +12,7 @@ from concurrent.futures._base import InvalidStateError
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Depends, HTTPException, status
 from fastapi.responses import JSONResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from strands.experimental.bidi.agent import BidiAgent
 from strands.experimental.bidi.models.nova_sonic import BidiNovaSonicModel
 from strands.experimental.bidi.types.io import BidiInput, BidiOutput
@@ -83,6 +84,15 @@ app = FastAPI(
     title="AgentCore Voice Agent",
     description="Bi-directional streaming voice agent with Amazon Nova Sonic",
     version="1.0.0"
+)
+
+# Add CORS middleware for CloudFront/API Gateway compatibility
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure appropriately for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Get the project root directory (agents/voice/app.py -> agents/voice -> agents -> project root)
@@ -420,16 +430,25 @@ async def websocket_endpoint(websocket: WebSocket):
     """
     WebSocket endpoint for bi-directional streaming voice conversations.
     
-    This endpoint:
-    - Accepts WebSocket connections on port 8080 at /ws
-    - Requires authentication via JWT token in query parameter
-    - Creates a Nova Sonic model and BidiAgent
-    - Streams audio input/output in real-time
-    - Handles interruptions and context changes
-    - Integrates with memory for context-aware responses
+    This endpoint accepts WebSocket connections for real-time voice interactions.
+    If a session_id is provided as a query parameter, it will reuse that session
+    instead of creating a new one. This allows session continuity when switching
+    from text mode to voice mode.
+    
+    Args:
+        websocket: WebSocket connection instance.
+    
+    Note:
+        Query parameters are standard for WebSocket handshakes and are supported
+        by API Gateway v2 WebSocket API. The token and session_id are passed as
+        query parameters for authentication and session management.
+        
+    Raises:
+        WebSocketDisconnect: If the connection is closed unexpectedly.
     """
-    # Get token from query parameters
+    # Get token and session_id from query parameters
     token = websocket.query_params.get("token")
+    session_id = websocket.query_params.get("session_id")
     user_info = None
     
     # Authenticate if OAuth2 is enabled
@@ -452,7 +471,9 @@ async def websocket_endpoint(websocket: WebSocket):
     session_manager: Optional[MemorySessionManager] = None
     if memory_client and user_info:
         actor_id = user_info.get("email", "anonymous")
-        session_manager = MemorySessionManager(memory_client, actor_id=actor_id)
+        # Use provided session_id (from query param) or create new one
+        # This allows reusing sessions when switching from text to voice mode
+        session_manager = MemorySessionManager(memory_client, actor_id=actor_id, session_id=session_id)
         await session_manager.initialize()
         
         # Get memory context and update system prompt
@@ -697,6 +718,64 @@ async def query_memories(
             })
     
     return JSONResponse(content={"memories": formatted_memories})
+
+
+@app.get("/health")
+async def health() -> Dict[str, str]:
+    """
+    Health check endpoint for load balancers and monitoring.
+    
+    Returns:
+        Dict containing service status and name.
+    """
+    return {"status": "healthy", "service": "voice"}
+
+
+@app.post("/api/sessions")
+async def create_session(
+    request: Request,
+    user: Dict[str, Any] = Depends(get_current_user),
+    session_id: Optional[str] = None
+) -> Dict[str, str]:
+    """
+    Create a new session or reuse an existing session.
+    
+    This endpoint creates a new memory session for the authenticated user.
+    If a session_id is provided in the request body or query parameter, it will
+    reuse that session instead of creating a new one. This allows session continuity
+    when switching between voice and text modes.
+    
+    Args:
+        request: FastAPI request object (may contain session_id in body)
+        user: Authenticated user information from OAuth2 middleware.
+        session_id: Optional session ID from query parameter to reuse. If not provided,
+                   a new session will be created.
+    
+    Returns:
+        Dict containing the session_id.
+        
+    Raises:
+        HTTPException: If authentication fails or memory client is unavailable.
+    """
+    if not memory_client:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Memory not enabled"
+        )
+    
+    # Try to get session_id from request body if not in query param
+    if not session_id:
+        try:
+            body = await request.json()
+            session_id = body.get("session_id")
+        except Exception:
+            pass  # No body or not JSON
+    
+    actor_id = user.get("email", "anonymous")
+    # If session_id provided, reuse it; otherwise create new
+    session_manager = MemorySessionManager(memory_client, actor_id=actor_id, session_id=session_id)
+    await session_manager.initialize()
+    return {"session_id": session_manager.session_id}
 
 
 @app.get("/api/memory/sessions")

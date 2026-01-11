@@ -4,7 +4,8 @@ import os
 import logging
 import httpx
 import json
-from typing import Dict
+import uuid
+from typing import Dict, List, Optional
 from agents.shared.service_discovery import get_service_discovery
 from agents.shared.observability import AgentLogger
 
@@ -26,6 +27,10 @@ class A2AClient:
         """Get next JSON-RPC request ID."""
         self._request_id += 1
         return self._request_id
+    
+    def _generate_message_id(self) -> str:
+        """Generate unique message ID for A2A protocol."""
+        return f"msg-{uuid.uuid4().hex[:16]}"
     
     async def call_agent(
         self,
@@ -49,14 +54,38 @@ class A2AClient:
         
         try:
             endpoint = self.service_discovery.get_endpoint(agent_name)
+            logger.info(f"[A2A] Calling '{agent_name}' agent at endpoint: {endpoint}")
+            logger.info(f"[A2A] Task: {task[:150]}")
             
             # Build JSON-RPC 2.0 request
+            # Strands A2AServer uses 'message/send' method with required fields:
+            # - messageId: unique identifier (required)
+            # - role: "user" or "agent" (required)
+            # - parts: array of content parts (required, not "content")
+            message = {
+                "messageId": self._generate_message_id(),  # REQUIRED
+                "role": "user",                            # REQUIRED
+                "parts": [                                 # REQUIRED (not "content")
+                    {
+                        "type": "text",
+                        "text": task
+                    }
+                ]
+            }
+            
+            # Add optional fields if provided in kwargs
+            if "context_id" in kwargs:
+                message["contextId"] = kwargs["context_id"]
+            if "task_id" in kwargs:
+                message["taskId"] = kwargs["task_id"]
+            if "metadata" in kwargs:
+                message["metadata"] = kwargs["metadata"]
+            
             request = {
                 "jsonrpc": "2.0",
-                "method": "task",
+                "method": "message/send",  # Strands uses message-based approach
                 "params": {
-                    "task": task,
-                    **kwargs
+                    "message": message
                 },
                 "id": self._get_next_id()
             }
@@ -74,14 +103,7 @@ class A2AClient:
             
             # Extract result or error
             if "result" in result:
-                content = result["result"]
-                # Handle different response formats
-                if isinstance(content, str):
-                    response_content = content
-                elif isinstance(content, dict):
-                    response_content = content.get("content", content.get("text", str(content)))
-                else:
-                    response_content = str(content)
+                response_content = self._extract_response_content(result["result"])
             elif "error" in result:
                 error = result["error"]
                 raise Exception(f"A2A error from {agent_name}: {error.get('message', str(error))}")
@@ -89,6 +111,9 @@ class A2AClient:
                 raise Exception(f"Invalid JSON-RPC response from {agent_name}: {result}")
             
             latency_ms = (time.time() - start_time) * 1000
+            
+            logger.info(f"[A2A] ✓ Successfully called '{agent_name}' agent (latency: {latency_ms:.1f}ms)")
+            logger.info(f"[A2A]   Response length: {len(response_content)} chars")
             
             self.logger.log_a2a_call(
                 target_agent=agent_name,
@@ -111,6 +136,43 @@ class A2AClient:
             )
             logger.error(f"Failed to call agent {agent_name}: {e}")
             raise
+    
+    def _extract_response_content(self, result) -> str:
+        """
+        Extract text content from A2A response.
+        
+        Response can be:
+        - Direct string
+        - Message object with parts
+        - Dict with various formats
+        """
+        if isinstance(result, str):
+            return result
+        
+        if isinstance(result, dict):
+            # Check for message object with parts
+            if "message" in result:
+                msg = result["message"]
+                if isinstance(msg, dict) and "parts" in msg:
+                    return self._extract_text_from_parts(msg["parts"])
+                return str(msg)
+            
+            # Check for direct parts array
+            if "parts" in result:
+                return self._extract_text_from_parts(result["parts"])
+            
+            # Fallback to common response fields
+            return result.get("content", result.get("text", str(result)))
+        
+        return str(result)
+    
+    def _extract_text_from_parts(self, parts: List[Dict]) -> str:
+        """Extract text from parts array."""
+        text_parts = []
+        for part in parts:
+            if part.get("type") == "text" and "text" in part:
+                text_parts.append(part["text"])
+        return "\n".join(text_parts) if text_parts else str(parts)
     
     async def health_check(self, agent_name: str) -> Dict:
         """Check health of another agent via agent card."""

@@ -1,9 +1,9 @@
 """Integration tests for A2A communication."""
 
+import os
 import pytest
 import httpx
 from agents.shared.models import AgentRequest
-from agents.shared.auth import InterAgentAuth
 from agents.shared.service_discovery import ServiceDiscovery
 from agents.shared.circuit_breaker import CircuitBreaker, CircuitState
 from agents.shared.retry import retry_with_backoff
@@ -11,11 +11,9 @@ from agents.shared.retry import retry_with_backoff
 
 @pytest.fixture
 def auth_token():
-    """Create auth token for testing."""
-    import os
-    os.environ["AGENT_AUTH_SECRET"] = "test-secret-key-for-testing-only"
-    auth = InterAgentAuth()
-    return auth.create_token("test-client")
+    """Get auth token for testing from environment or return None."""
+    # Return None if not set - tests will handle this gracefully
+    return os.getenv("TEST_AUTH_TOKEN")
 
 
 @pytest.mark.asyncio
@@ -25,33 +23,45 @@ async def test_service_discovery():
     os.environ["ENVIRONMENT"] = "development"
     discovery = ServiceDiscovery()
     
-    assert discovery.get_endpoint("orchestrator") == "http://orchestrator:8080"
-    assert discovery.get_endpoint("vision") == "http://vision:8080"
-    assert discovery.get_endpoint("document") == "http://document:8080"
-    assert discovery.get_endpoint("data") == "http://data:8080"
-    assert discovery.get_endpoint("tool") == "http://tool:8080"
+    # A2A protocol uses port 9000, not 8080
+    assert discovery.get_endpoint("orchestrator") == "http://orchestrator:9000"
+    assert discovery.get_endpoint("vision") == "http://vision:9000"
+    assert discovery.get_endpoint("document") == "http://document:9000"
+    assert discovery.get_endpoint("data") == "http://data:9000"
+    assert discovery.get_endpoint("tool") == "http://tool:9000"
 
 
 @pytest.mark.asyncio
 async def test_a2a_call_with_retry(auth_token):
     """Test A2A call with retry logic."""
     async with httpx.AsyncClient() as client:
-        request = AgentRequest(
-            message="Test message",
-            context=[],
-            user_id="test-user",
-            session_id="test-session"
-        )
+        # Vision agent uses A2A protocol (JSON-RPC 2.0)
+        import uuid
+        a2a_request = {
+            "jsonrpc": "2.0",
+            "method": "message/send",
+            "params": {
+                "message": {
+                    "messageId": f"msg-{uuid.uuid4().hex[:16]}",
+                    "role": "user",
+                    "parts": [{"type": "text", "text": "Test message"}]
+                }
+            },
+            "id": 1
+        }
         
-        # Make call to vision agent
+        # Vision agent A2A server is on port 9001 (host) -> 9000 (container)
         response = await client.post(
-            "http://localhost:8081/process",
-            json=request.model_dump(),
-            headers={"Authorization": f"Bearer {auth_token}"},
+            "http://localhost:9001/",
+            json=a2a_request,
             timeout=30.0
         )
         
+        # A2A protocol returns JSON-RPC 2.0 response
         assert response.status_code == 200
+        data = response.json()
+        assert "jsonrpc" in data
+        assert data["jsonrpc"] == "2.0"
 
 
 @pytest.mark.asyncio
@@ -109,11 +119,24 @@ async def test_a2a_call_error_handling(auth_token):
         )
         
         # Try to call non-existent agent endpoint
+        import uuid
+        a2a_request = {
+            "jsonrpc": "2.0",
+            "method": "message/send",
+            "params": {
+                "message": {
+                    "messageId": f"msg-{uuid.uuid4().hex[:16]}",
+                    "role": "user",
+                    "parts": [{"type": "text", "text": "Test message"}]
+                }
+            },
+            "id": 1
+        }
+        
         try:
             response = await client.post(
-                "http://localhost:9999/process",
-                json=request.model_dump(),
-                headers={"Authorization": f"Bearer {auth_token}"},
+                "http://localhost:9999/",
+                json=a2a_request,
                 timeout=5.0
             )
         except httpx.ConnectError:
