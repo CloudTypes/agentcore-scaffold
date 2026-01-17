@@ -4,14 +4,21 @@ import os
 import logging
 import sys
 import re
+import json
+import time
+import uuid
+import threading
 from pathlib import Path
-from typing import Dict, Optional, Any
+from datetime import datetime, timedelta
+from typing import Dict, Optional, Any, List
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
+import boto3
+import uvicorn
+import logging as uvicorn_logging
 from strands import Agent
-from strands.multiagent.a2a import A2AServer
 from strands.tools import tool
 from agents.orchestrator.agent import OrchestratorAgent
 from agents.orchestrator.a2a_client import A2AClient
@@ -26,14 +33,281 @@ from auth.google_oauth2 import GoogleOAuth2Handler
 from auth.oauth2_middleware import get_current_user
 from config.runtime import get_config
 
+# Constants
+DEFAULT_USER_ID = "default"
+DEFAULT_ACTOR_ID = "anonymous"
+DEFAULT_AGENT_NAME = "orchestrator-agent"
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Disable FastAPI and uvicorn loggers to reduce logging noise
-# Note: This doesn't prevent Pydantic validation errors from being printed
-# Those appear to be printed before our code can intercept them
-for logger_name in ['fastapi', 'uvicorn', 'uvicorn.error', 'uvicorn.access']:
-    logging.getLogger(logger_name).disabled = True
+
+def _disable_noisy_loggers():
+    """Disable FastAPI and uvicorn loggers to reduce logging noise.
+    
+    Note: This doesn't prevent Pydantic validation errors from being printed.
+    Those appear to be printed before our code can intercept them.
+    """
+    for logger_name in ['fastapi', 'uvicorn', 'uvicorn.error', 'uvicorn.access']:
+        logging.getLogger(logger_name).disabled = True
+    # Also disable uvicorn loggers via uvicorn_logging module
+    uvicorn_logger = uvicorn_logging.getLogger("uvicorn")
+    uvicorn_logger.disabled = True
+    uvicorn_logger = uvicorn_logging.getLogger("uvicorn.access")
+    uvicorn_logger.disabled = True
+    uvicorn_logger = uvicorn_logging.getLogger("uvicorn.error")
+    uvicorn_logger.disabled = True
+
+
+# Disable noisy loggers at startup
+_disable_noisy_loggers()
+
+
+def _normalize_message_content(content: Any) -> List[Dict[str, str]]:
+    """Normalize message content to ContentBlocks format for Strands.
+    
+    Strands expects content to be a list of ContentBlock dicts: [{"text": "..."}]
+    
+    Args:
+        content: Content in various formats (str, dict, list, etc.)
+        
+    Returns:
+        List of ContentBlock dictionaries
+    """
+    if isinstance(content, str):
+        return [{"text": content}]
+    elif isinstance(content, dict):
+        if "text" in content:
+            return [content]
+        else:
+            # Try to extract text from dict
+            text = content.get("content", content.get("text", str(content)))
+            return [{"text": text}]
+    elif isinstance(content, list):
+        # List of ContentBlocks - ensure each is properly formatted
+        formatted_blocks = []
+        for block in content:
+            if isinstance(block, str):
+                formatted_blocks.append({"text": block})
+            elif isinstance(block, dict):
+                if "text" in block:
+                    formatted_blocks.append(block)
+                else:
+                    # Try to extract text from dict
+                    text = block.get("content", block.get("text", str(block)))
+                    formatted_blocks.append({"text": text})
+            else:
+                formatted_blocks.append({"text": str(block)})
+        return formatted_blocks
+    else:
+        return [{"text": str(content) if content else ""}]
+
+
+def _normalize_messages(messages: List) -> List[Dict]:
+    """Normalize messages to ensure they're in the correct format for Strands.
+    
+    Args:
+        messages: List of messages in various formats
+        
+    Returns:
+        List of normalized message dictionaries
+    """
+    normalized_messages = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            role = msg.get("role", "user").lower()
+            content = msg.get("content", "")
+            normalized_content = _normalize_message_content(content)
+            normalized_messages.append({"role": role, "content": normalized_content})
+        elif hasattr(msg, "role") and hasattr(msg, "content"):
+            # Handle Message objects - convert to dict format
+            role = getattr(msg, "role", "user").lower()
+            content = getattr(msg, "content", "")
+            normalized_content = _normalize_message_content(content)
+            normalized_messages.append({"role": role, "content": normalized_content})
+        else:
+            # Skip invalid message formats
+            logger.warning(f"Skipping invalid message format: {type(msg)}")
+    return normalized_messages
+
+
+def _extract_response_content(response: Any) -> str:
+    """Extract text content from various response formats.
+    
+    Args:
+        response: Response object from Strands agent (AgentResult, Message, etc.)
+        
+    Returns:
+        Extracted text content as string
+    """
+    response_content = ""
+    if hasattr(response, 'message'):
+        message = response.message
+        # Message is dict-like, get content
+        if isinstance(message, dict):
+            content = message.get("content", [])
+        else:
+            content = getattr(message, "content", [])
+        
+        # Extract text from content blocks
+        if isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict):
+                    text = block.get("text", "")
+                    if text:
+                        text_parts.append(text)
+                elif isinstance(block, str):
+                    text_parts.append(block)
+            response_content = " ".join(text_parts) if text_parts else ""
+        elif isinstance(content, str):
+            response_content = content
+        else:
+            response_content = str(content) if content else ""
+    elif hasattr(response, 'content'):
+        response_content = response.content
+    else:
+        # Fallback: try to get text from the result
+        response_content = str(response) if response else ""
+    
+    return response_content
+
+
+def _get_actor_id(user: Dict[str, Any]) -> str:
+    """Extract actor ID from user dictionary consistently.
+    
+    Args:
+        user: User dictionary from OAuth2 middleware
+        
+    Returns:
+        Actor ID string (email, sub, or default)
+    """
+    return user.get("email") or user.get("sub") or DEFAULT_ACTOR_ID
+
+
+# Global orchestrator agent instance (will be created lazily)
+_orchestrator_agent: Optional['MemoryIntegratedOrchestrator'] = None
+# Public attribute for testing - can be patched by tests
+orchestrator_agent: Optional['MemoryIntegratedOrchestrator'] = None
+
+
+def _get_orchestrator_agent() -> 'MemoryIntegratedOrchestrator':
+    """Get or create the global orchestrator agent instance (lazy initialization).
+    
+    Checks for a patched orchestrator_agent first (for testing), then falls back
+    to creating/returning the global _orchestrator_agent instance.
+    
+    Returns:
+        MemoryIntegratedOrchestrator instance
+    """
+    global _orchestrator_agent
+    # Check if orchestrator_agent was patched (for testing)
+    # Use globals() to check if it's been set without triggering __getattr__
+    module_globals = globals()
+    if 'orchestrator_agent' in module_globals and module_globals['orchestrator_agent'] is not None:
+        return module_globals['orchestrator_agent']
+    
+    # Otherwise, use the private global instance
+    if not _orchestrator_agent:
+        _orchestrator_agent = create_orchestrator_agent()
+    return _orchestrator_agent
+
+
+def __getattr__(name: str):
+    """Allow access to orchestrator_agent as a module attribute when not explicitly set.
+    
+    This allows tests to patch orchestrator_agent directly, but when not patched,
+    it will return the actual agent instance via _get_orchestrator_agent().
+    """
+    if name == 'orchestrator_agent':
+        return _get_orchestrator_agent()
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+
+def _build_media_content(
+    media_type: str,
+    media_format: str,
+    base64_data: Optional[str],
+    s3_uri: Optional[str]
+) -> Dict:
+    """Build media content dictionary for A2A call.
+    
+    Args:
+        media_type: Type of media ("image" or "video")
+        media_format: Format string (e.g., "jpeg", "mp4")
+        base64_data: Optional base64 encoded data
+        s3_uri: Optional S3 URI
+        
+    Returns:
+        Media content dictionary for A2A protocol
+        
+    Raises:
+        HTTPException: If no data source provided or unsupported media type
+    """
+    if media_type not in ["image", "video"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported media type: {media_type}"
+        )
+    
+    media_content = {
+        "type": media_type,
+        media_type: {
+            "format": media_format,
+            "source": {}
+        }
+    }
+    
+    if base64_data:
+        media_content[media_type]["source"]["base64"] = base64_data
+    elif s3_uri:
+        media_content[media_type]["source"]["s3Location"] = {"uri": s3_uri}
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"No {media_type} data provided (base64 or S3 URI required)"
+        )
+    
+    return media_content
+
+
+def _parse_vision_result(result: Any) -> Dict[str, Any]:
+    """Parse vision agent response into standardized format.
+    
+    Args:
+        result: Result from vision agent (string, dict, or other)
+        
+    Returns:
+        Dictionary with "text" and optional "usage" keys
+    """
+    # If result is already a string (from _extract_response_content)
+    if isinstance(result, str):
+        # Try to parse as JSON in case it's a JSON string
+        try:
+            parsed = json.loads(result)
+            logger.debug(f"Parsed JSON result type: {type(parsed)}")
+            # If it's a dict, extract text field
+            if isinstance(parsed, dict):
+                text = parsed.get("text", str(parsed))
+                logger.debug(f"Extracted text length: {len(text)}")
+                return {"text": text, "usage": parsed.get("usage")}
+            else:
+                # If parsed is not a dict, use it as text
+                return {"text": str(parsed), "usage": None}
+        except (json.JSONDecodeError, TypeError) as e:
+            # Not JSON, treat as plain text
+            logger.debug(f"Result is not JSON, treating as plain text: {e}")
+            return {"text": result, "usage": None}
+    elif isinstance(result, dict):
+        # Already a dict, extract text field
+        text = result.get("text", str(result))
+        logger.debug(f"Result is dict, extracted text length: {len(text)}")
+        return {"text": text, "usage": result.get("usage")}
+    else:
+        # Other types, convert to text
+        logger.debug(f"Result is other type, converting to string")
+        return {"text": str(result), "usage": None}
+
 
 # Override Pydantic ValidationError string representation to sanitize base64 data
 try:
@@ -43,7 +317,16 @@ try:
     original_str = PydanticValidationError.__str__
     
     def sanitized_str(self):
-        """Override Pydantic's __str__ to sanitize base64"""
+        """Override Pydantic's __str__ to sanitize base64 data in error messages.
+        
+        Replaces long base64-like strings in Pydantic validation error messages
+        with a truncated placeholder to prevent log pollution and potential
+        security issues from exposing large base64 payloads.
+        
+        Returns:
+            Sanitized string representation of the validation error with
+            base64 data truncated to '<base64_data_truncated>'
+        """
         original = original_str(self)
         # Truncate long base64-like strings in the output
         return re.sub(r'[A-Za-z0-9+/=]{200,}', '<base64_data_truncated>', original)
@@ -59,7 +342,19 @@ class MemoryIntegratedOrchestrator:
     """Wrapper that adds memory integration to Orchestrator Agent for A2A protocol."""
     
     def __init__(self, orchestrator_wrapper: OrchestratorAgent, a2a_client: A2AClient):
-        """Initialize with orchestrator wrapper that has memory client."""
+        """Initialize with orchestrator wrapper that has memory client.
+        
+        Sets up the memory-integrated orchestrator by wrapping an OrchestratorAgent
+        instance and configuring it with routing tools for specialist agents.
+        Creates a Strands Agent with routing tools that can be called during
+        conversation to delegate tasks to specialist agents via A2A protocol.
+        
+        Args:
+            orchestrator_wrapper: OrchestratorAgent instance that provides memory
+                                 integration and base agent functionality
+            a2a_client: A2AClient instance for making agent-to-agent calls to
+                      specialist agents
+        """
         self.orchestrator_wrapper = orchestrator_wrapper
         self.a2a_client = a2a_client
         self.strands_agent = orchestrator_wrapper.strands_agent
@@ -68,7 +363,7 @@ class MemoryIntegratedOrchestrator:
             self.strands_agent.description = 'Orchestrator agent that routes tasks to specialist agents'
         # Copy agent attributes for A2AServer compatibility
         self.model = self.strands_agent.model
-        self.name = getattr(self.strands_agent, 'name', 'orchestrator-agent')
+        self.name = getattr(self.strands_agent, 'name', DEFAULT_AGENT_NAME)
         self.description = self.strands_agent.description
         # Delegate tool_registry to underlying Strands agent for A2AServer
         self.tool_registry = getattr(self.strands_agent, 'tool_registry', None)
@@ -111,7 +406,19 @@ Always use the routing tools when appropriate - the tools will handle calling th
         )
     
     def _create_routing_tool(self, agent_name: str, description: str):
-        """Create a routing tool for a specialist agent."""
+        """Create a routing tool for a specialist agent.
+        
+        This method creates a dynamically named tool function that routes tasks
+        to a specific specialist agent via the A2A client. The tool is registered
+        with Strands and can be called by the orchestrator agent during conversation.
+        
+        Args:
+            agent_name: Name of the specialist agent (e.g., "vision", "document", "data", "tool")
+            description: Human-readable description of what the agent handles
+            
+        Returns:
+            A decorated tool function that can be used by the Strands agent
+        """
         # Create a closure to capture self and agent_name
         orchestrator_instance = self
         
@@ -131,8 +438,8 @@ Always use the routing tools when appropriate - the tools will handle calling th
                 The response from the {agent_name} agent. Present this directly to the user.
             """
             # Get user_id and session_id from the current invocation context
-            user_id = getattr(orchestrator_instance, '_current_user_id', 'default')
-            session_id = getattr(orchestrator_instance, '_current_session_id', 'default')
+            user_id = getattr(orchestrator_instance, '_current_user_id', DEFAULT_USER_ID)
+            session_id = getattr(orchestrator_instance, '_current_session_id', DEFAULT_USER_ID)
             
             logger.info(f"[ROUTING] → Calling specialist agent '{agent_name}' with task: {task[:100]}")
             logger.info(f"[ROUTING]   user_id={user_id}, session_id={session_id}")
@@ -158,10 +465,28 @@ Always use the routing tools when appropriate - the tools will handle calling th
         return decorated_tool
     
     async def run(self, messages, **kwargs):
-        """Run orchestrator with memory integration."""
+        """Run orchestrator with memory integration.
+        
+        Processes user messages through the orchestrator agent, which may route
+        to specialist agents via A2A protocol. Loads conversation context from
+        memory, normalizes messages for Strands format, invokes the agent with
+        routing tools, and stores the interaction back to memory.
+        
+        Args:
+            messages: List of message dictionaries or objects in various formats.
+                     Should include at least one user message.
+            **kwargs: Additional keyword arguments including:
+                - user_id: User identifier for memory context
+                - session_id: Session identifier for conversation continuity
+                
+        Returns:
+            Response object with a 'content' attribute containing the agent's
+            text response. The response may come directly from the orchestrator
+            or from a specialist agent via routing tools.
+        """
         # Extract user_id and session_id from kwargs for use in routing tools
-        user_id = kwargs.get("user_id", "default")
-        session_id = kwargs.get("session_id", "default")
+        user_id = kwargs.get("user_id", DEFAULT_USER_ID)
+        session_id = kwargs.get("session_id", DEFAULT_USER_ID)
         
         # Store user_id and session_id so routing tools can access them
         # We'll update the tools to use these values
@@ -209,77 +534,7 @@ Always use the routing tools when appropriate - the tools will handle calling th
                 logger.warning(f"Failed to load context from memory: {e}")
         
         # Normalize messages to ensure they're in the correct format for Strands
-        # Strands expects messages with content as ContentBlock (dict with 'text' key) or list of ContentBlocks
-        # Content cannot be a plain string - it must be {"text": "..."} or [{"text": "..."}]
-        normalized_messages = []
-        for msg in messages:
-            if isinstance(msg, dict):
-                role = msg.get("role", "user").lower()
-                content = msg.get("content", "")
-                
-                # Convert content to list of ContentBlocks format
-                # Strands expects content to be a list of ContentBlock dicts: [{"text": "..."}]
-                if isinstance(content, str):
-                    # Convert string to list with single ContentBlock
-                    content = [{"text": content}]
-                elif isinstance(content, dict):
-                    # Single ContentBlock dict - wrap in list
-                    if "text" in content:
-                        content = [content]
-                    else:
-                        # If it's a dict but not a ContentBlock, try to extract text
-                        text = content.get("content", content.get("text", str(content)))
-                        content = [{"text": text}]
-                elif isinstance(content, list):
-                    # List of ContentBlocks - ensure each is properly formatted
-                    formatted_blocks = []
-                    for block in content:
-                        if isinstance(block, str):
-                            formatted_blocks.append({"text": block})
-                        elif isinstance(block, dict):
-                            if "text" in block:
-                                formatted_blocks.append(block)
-                            else:
-                                # Try to extract text from dict
-                                text = block.get("content", block.get("text", str(block)))
-                                formatted_blocks.append({"text": text})
-                        else:
-                            formatted_blocks.append({"text": str(block)})
-                    content = formatted_blocks
-                else:
-                    # Convert other types to list with single ContentBlock
-                    content = [{"text": str(content) if content else ""}]
-                
-                normalized_messages.append({"role": role, "content": content})
-            elif hasattr(msg, "role") and hasattr(msg, "content"):
-                # Handle Message objects - convert to dict format
-                role = getattr(msg, "role", "user").lower()
-                content = getattr(msg, "content", "")
-                # Convert to list of ContentBlocks
-                if isinstance(content, str):
-                    content = [{"text": content}]
-                elif isinstance(content, dict):
-                    if "text" in content:
-                        content = [content]
-                    else:
-                        content = [{"text": str(content)}]
-                elif isinstance(content, list):
-                    # Ensure each element is a ContentBlock dict
-                    formatted_blocks = []
-                    for block in content:
-                        if isinstance(block, str):
-                            formatted_blocks.append({"text": block})
-                        elif isinstance(block, dict) and "text" in block:
-                            formatted_blocks.append(block)
-                        else:
-                            formatted_blocks.append({"text": str(block)})
-                    content = formatted_blocks
-                else:
-                    content = [{"text": str(content) if content else ""}]
-                normalized_messages.append({"role": role, "content": content})
-            else:
-                # Skip invalid message formats
-                logger.warning(f"Skipping invalid message format: {type(msg)}")
+        normalized_messages = _normalize_messages(messages)
         
         # Run the Strands agent with tools (reuse the agent created in __init__)
         # Agent is callable - call it directly with messages
@@ -290,37 +545,7 @@ Always use the routing tools when appropriate - the tools will handle calling th
         response = await self.agent_with_tools.invoke_async(prompt=normalized_messages)
         
         # Extract content from AgentResult
-        # AgentResult has a 'message' field which is a Message object
-        # The Message object has 'content' which is a list of ContentBlocks
-        response_content = ""
-        if hasattr(response, 'message'):
-            message = response.message
-            # Message is dict-like, get content
-            if isinstance(message, dict):
-                content = message.get("content", [])
-            else:
-                content = getattr(message, "content", [])
-            
-            # Extract text from content blocks
-            if isinstance(content, list):
-                text_parts = []
-                for block in content:
-                    if isinstance(block, dict):
-                        text = block.get("text", "")
-                        if text:
-                            text_parts.append(text)
-                    elif isinstance(block, str):
-                        text_parts.append(block)
-                response_content = " ".join(text_parts) if text_parts else ""
-            elif isinstance(content, str):
-                response_content = content
-            else:
-                response_content = str(content) if content else ""
-        elif hasattr(response, 'content'):
-            response_content = response.content
-        else:
-            # Fallback: try to get text from the result
-            response_content = str(response) if response else ""
+        response_content = _extract_response_content(response)
         
         # Clean up the response - remove tool call mentions if present
         # Sometimes the agent includes "Action: route_to_tool(...)" in the response
@@ -364,6 +589,15 @@ Always use the routing tools when appropriate - the tools will handle calling th
         
         # Return a response object with content attribute for compatibility
         class Response:
+            """Simple response wrapper for compatibility with A2A protocol.
+            
+            This class provides a consistent interface for returning agent responses
+            with a 'content' attribute, matching the expected format for A2A
+            protocol and other parts of the system.
+            
+            Args:
+                content: The text content of the agent's response
+            """
             def __init__(self, content):
                 self.content = content
         
@@ -371,7 +605,16 @@ Always use the routing tools when appropriate - the tools will handle calling th
 
 
 def create_orchestrator_agent():
-    """Create orchestrator agent with Strands and memory integration."""
+    """Create orchestrator agent with Strands and memory integration.
+    
+    Initializes and returns a fully configured MemoryIntegratedOrchestrator
+    instance. This includes setting up the A2A client, orchestrator wrapper,
+    and all routing tools for specialist agents.
+    
+    Returns:
+        MemoryIntegratedOrchestrator: Configured orchestrator agent instance
+        ready to process requests and route to specialist agents
+    """
     # Initialize A2A client
     a2a_client = A2AClient("orchestrator")
     
@@ -398,33 +641,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Disable FastAPI's automatic validation error logging to reduce logging noise
-fastapi_logger = logging.getLogger("fastapi")
-fastapi_logger.disabled = True
-
-
-def sanitize_base64_in_dict(obj, max_length=100):
-    """Recursively sanitize base64 strings in dictionaries"""
-    if isinstance(obj, dict):
-        return {k: sanitize_base64_in_dict(v, max_length) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [sanitize_base64_in_dict(item, max_length) for item in obj]
-    elif isinstance(obj, str):
-        # Check if it looks like base64 and is long
-        if len(obj) > max_length and re.match(r'^[A-Za-z0-9+/=]+$', obj):
-            return f"<base64_data_{len(obj)}_bytes>"
-        return obj
-    return obj
 
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Custom handler that sanitizes validation errors before logging"""
+    """Custom handler that sanitizes validation errors before logging.
+    
+    Intercepts FastAPI request validation errors and sanitizes any base64
+    data in the error details before logging. This prevents large base64
+    payloads from polluting logs and potentially exposing sensitive data.
+    
+    Args:
+        request: FastAPI request object that triggered the validation error
+        exc: RequestValidationError exception containing validation details
+        
+    Returns:
+        JSONResponse with HTTP 422 status and a generic error message that
+        doesn't expose base64 data or detailed validation information
+    """
     # Sanitize the errors before they get logged
-    sanitized_errors = []
-    for error in exc.errors():
-        sanitized_error = sanitize_base64_in_dict(error)
-        sanitized_errors.append(sanitized_error)
+    sanitized_errors = [sanitize_for_logging(error) for error in exc.errors()]
     
     # Log the sanitized version
     logger.error(f"Validation error on {request.url.path}: {sanitized_errors}")
@@ -462,8 +698,6 @@ try:
 except Exception as e:
     logger.warning(f"OAuth2 handler not initialized: {e}")
 
-# Global orchestrator agent instance (will be created in main)
-orchestrator_agent: Optional[MemoryIntegratedOrchestrator] = None
 
 
 @app.get("/health")
@@ -527,7 +761,7 @@ async def create_session(
         except Exception:
             pass  # No body or not JSON
     
-    actor_id = user.get("email", "anonymous")
+    actor_id = _get_actor_id(user)
     session_manager = MemorySessionManager(memory_client, actor_id=actor_id, session_id=session_id)
     await session_manager.initialize()
     return {"session_id": session_manager.session_id}
@@ -557,7 +791,7 @@ async def get_session(
             detail="Memory not enabled"
         )
     
-    actor_id = user.get("email", "anonymous")
+    actor_id = _get_actor_id(user)
     
     try:
         # Get session summary
@@ -587,6 +821,7 @@ async def get_session(
             "updated_at": summary_record.get("updatedAt")
         }
     except HTTPException:
+        # Re-raise HTTPExceptions (e.g., validation errors) as-is
         raise
     except Exception as e:
         logger.error(f"Error retrieving session: {e}")
@@ -625,10 +860,8 @@ async def chat(
         >>> response
         {"response": "2+2 equals 4."}
     """
-    # Initialize orchestrator agent if not already initialized
-    global orchestrator_agent
-    if not orchestrator_agent:
-        orchestrator_agent = create_orchestrator_agent()
+    # Get orchestrator agent (lazy initialization)
+    orchestrator_agent = _get_orchestrator_agent()
     
     try:
         body = await request.json()
@@ -647,7 +880,7 @@ async def chat(
                 detail="Session ID is required"
             )
         
-        actor_id = user.get("email", "anonymous")
+        actor_id = _get_actor_id(user)
         
         # Prepare messages for orchestrator
         messages = [{"role": "user", "content": message}]
@@ -660,8 +893,8 @@ async def chat(
         )
         
         return {"response": response.content}
-        
     except HTTPException:
+        # Re-raise HTTPExceptions (e.g., validation errors) as-is
         raise
     except Exception as e:
         logger.error(f"Error processing chat message: {e}", exc_info=True)
@@ -676,12 +909,36 @@ async def get_presigned_url(
     request: Request,
     user: Dict[str, Any] = Depends(get_current_user)
 ) -> Dict[str, str]:
-    """Generate S3 presigned URL for file upload."""
-    import boto3
-    from datetime import datetime, timedelta
-    import uuid
-    import os
+    """Generate S3 presigned URL for file upload.
     
+    Creates a presigned S3 URL that allows clients to upload image or video
+    files directly to S3 without exposing AWS credentials. The URL is valid
+    for a configurable expiration time (default 1 hour).
+    
+    Args:
+        request: FastAPI request object containing fileName and fileType in body.
+        user: Authenticated user information from OAuth2 middleware.
+    
+    Returns:
+        Dictionary containing:
+            - uploadUrl: Presigned S3 URL for PUT operation
+            - s3Uri: Full S3 URI (s3://bucket/key)
+            - key: S3 object key for the uploaded file
+            
+    Raises:
+        HTTPException: If fileName/fileType are missing, file type is unsupported,
+                      or S3 URL generation fails.
+                      
+    Example:
+        >>> request_body = {"fileName": "image.jpg", "fileType": "image/jpeg"}
+        >>> response = await get_presigned_url(request, user={...})
+        >>> response
+        {
+            "uploadUrl": "https://s3.amazonaws.com/...",
+            "s3Uri": "s3://bucket/uploads/20240101-120000-abc123.jpg",
+            "key": "uploads/20240101-120000-abc123.jpg"
+        }
+    """
     try:
         body = await request.json()
         file_name = body.get("fileName")
@@ -727,8 +984,8 @@ async def get_presigned_url(
             "s3Uri": s3_uri,
             "key": s3_key
         }
-        
     except HTTPException:
+        # Re-raise HTTPExceptions (e.g., validation errors) as-is
         raise
     except Exception as e:
         logger.error(f"Error generating presigned URL: {e}", exc_info=True)
@@ -746,14 +1003,42 @@ async def vision_analysis(
     """
     Analyze image or video via orchestrator routing to vision agent.
     
-    Accepts multimodal content (image/video) and routes to vision agent via A2A.
+    Accepts multimodal content (image/video) either as base64-encoded data or
+    as an S3 URI. Routes the request to the vision specialist agent via A2A
+    protocol and returns the analysis results.
+    
+    Args:
+        request: FastAPI request object containing:
+            - prompt: Text prompt/question about the media
+            - mediaType: "image" or "video" (default: "image")
+            - base64Data: Optional base64-encoded media data
+            - s3Uri: Optional S3 URI pointing to uploaded media
+            - mimeType: MIME type of the media (default: "image/jpeg")
+            - session_id: Optional session ID for conversation context
+        user: Authenticated user information from OAuth2 middleware.
+    
+    Returns:
+        Dictionary containing:
+            - text: The vision agent's analysis response
+            - usage: Optional usage metadata (if provided by vision agent)
+            
+    Raises:
+        HTTPException: If prompt is missing, no media data provided, media type
+                      is unsupported, or vision agent processing fails.
+                      
+    Example:
+        >>> request_body = {
+        ...     "prompt": "What's in this image?",
+        ...     "base64Data": "iVBORw0KGgoAAAANSUhEUgAA...",
+        ...     "mimeType": "image/png"
+        ... }
+        >>> response = await vision_analysis(request, user={...})
+        >>> response
+        {"text": "This image shows...", "usage": None}
     """
-    global orchestrator_agent
-    if not orchestrator_agent:
-        orchestrator_agent = create_orchestrator_agent()
+    orchestrator_agent = _get_orchestrator_agent()
     
     try:
-        import time
         body = await request.json()
         prompt = body.get("prompt") or body.get("message")
         media_type = body.get("mediaType") or body.get("media_type", "image")
@@ -782,52 +1067,10 @@ async def vision_analysis(
                 base64_data = base64_data.split(',', 1)[1]
         
         # Build media_content for A2A call
-        media_content = None
-        if media_type == "image":
-            media_content = {
-                "type": "image",
-                "image": {
-                    "format": media_format,
-                    "source": {}
-                }
-            }
-            
-            if base64_data:
-                # Ensure it's a clean base64 string (no data URI prefix)
-                media_content["image"]["source"]["base64"] = base64_data
-            elif s3_uri:
-                media_content["image"]["source"]["s3Location"] = {"uri": s3_uri}
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="No image data provided (base64 or S3 URI required)"
-                )
-        elif media_type == "video":
-            media_content = {
-                "type": "video",
-                "video": {
-                    "format": media_format,
-                    "source": {}
-                }
-            }
-            
-            if base64_data:
-                media_content["video"]["source"]["base64"] = base64_data
-            elif s3_uri:
-                media_content["video"]["source"]["s3Location"] = {"uri": s3_uri}
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="No video data provided (base64 or S3 URI required)"
-                )
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Unsupported media type: {media_type}"
-            )
+        media_content = _build_media_content(media_type, media_format, base64_data, s3_uri)
         
         # Get user context
-        actor_id = user.get("sub", user.get("email", "default"))
+        actor_id = _get_actor_id(user)
         if not session_id:
             session_id = f"vision-{actor_id}-{int(time.time())}"
         
@@ -847,41 +1090,10 @@ async def vision_analysis(
         )
         
         # Parse result - extract text content
-        # The A2A client's _extract_response_content should return a string,
-        # but if the vision agent returns JSON, we need to parse and extract text
-        import json
-        
         logger.debug(f"Vision analysis result type: {type(result)}, value preview: {str(result)[:200]}")
-        
-        # If result is already a string (from _extract_response_content)
-        if isinstance(result, str):
-            # Try to parse as JSON in case it's a JSON string
-            try:
-                parsed = json.loads(result)
-                logger.debug(f"Parsed JSON result type: {type(parsed)}")
-                # If it's a dict, extract text field
-                if isinstance(parsed, dict):
-                    text = parsed.get("text", str(parsed))
-                    logger.debug(f"Extracted text length: {len(text)}")
-                    return {"text": text, "usage": parsed.get("usage")}
-                else:
-                    # If parsed is not a dict, use it as text
-                    return {"text": str(parsed), "usage": None}
-            except (json.JSONDecodeError, TypeError) as e:
-                # Not JSON, treat as plain text
-                logger.debug(f"Result is not JSON, treating as plain text: {e}")
-                return {"text": result, "usage": None}
-        elif isinstance(result, dict):
-            # Already a dict, extract text field
-            text = result.get("text", str(result))
-            logger.debug(f"Result is dict, extracted text length: {len(text)}")
-            return {"text": text, "usage": result.get("usage")}
-        else:
-            # Other types, convert to text
-            logger.debug(f"Result is other type, converting to string")
-            return {"text": str(result), "usage": None}
-        
+        return _parse_vision_result(result)
     except HTTPException:
+        # Re-raise HTTPExceptions (e.g., validation errors) as-is
         raise
     except Exception as e:
         logger.error(f"Error processing vision request: {str(e)}", exc_info=False)
@@ -900,12 +1112,18 @@ def main():
     set via ORCHESTRATOR_HTTP_PORT environment variable). In production, these
     can be routed through API Gateway/CloudFront.
     """
-    global orchestrator_agent
+    # Import A2AServer only when needed (lazy import to avoid dependency issues in tests)
+    try:
+        from strands.multiagent.a2a import A2AServer
+    except ImportError as e:
+        logger.error(f"Failed to import A2AServer: {e}")
+        logger.error("A2A functionality requires the 'a2a' package. Install it with: pip install a2a")
+        raise
     
     logger.info("Starting Orchestrator Agent...")
     
-    # Create agent
-    orchestrator_agent = create_orchestrator_agent()
+    # Create agent (this will also set the global _orchestrator_agent)
+    orchestrator_agent = _get_orchestrator_agent()
     
     # Get A2A port (default 9001 to avoid conflict with FastAPI on 9000)
     # Can be configured via A2A_PORT environment variable
@@ -928,24 +1146,13 @@ def main():
     logger.info(f"Agent Card: http://0.0.0.0:{a2a_port}/.well-known/agent-card.json")
     
     # Start A2A server in background thread
-    import threading
     a2a_thread = threading.Thread(target=a2a_server.serve, daemon=True)
     a2a_thread.start()
     
     # Start FastAPI server (BLOCKING - runs forever)
     # Note: If both use port 9000, A2A server will handle A2A requests,
     # and FastAPI will handle HTTP REST requests (they use different protocols)
-    import uvicorn
-    import logging as uvicorn_logging
-    
-    # COMPLETELY DISABLE uvicorn logging to prevent base64 data in logs
-    uvicorn_logger = uvicorn_logging.getLogger("uvicorn")
-    uvicorn_logger.disabled = True
-    uvicorn_logger = uvicorn_logging.getLogger("uvicorn.access")
-    uvicorn_logger.disabled = True
-    uvicorn_logger = uvicorn_logging.getLogger("uvicorn.error")
-    uvicorn_logger.disabled = True
-    
+    # Uvicorn loggers are already disabled by _disable_noisy_loggers()
     uvicorn.run(
         app, 
         host="0.0.0.0", 
