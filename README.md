@@ -1,115 +1,1402 @@
-# AgentCore Bi-Directional Streaming Voice Agent
+# AgentCore Voice Agent - Multi-Agent System
 
-A production-ready voice agent with bi-directional streaming using Amazon Bedrock AgentCore Runtime and Strands framework.
+A production-ready multi-agent system with bi-directional voice streaming, text-based agent orchestration, and AgentCore Memory integration. Built with AWS Bedrock AgentCore Runtime, Strands framework, and Amazon Nova models.
 
-## 🚀 Quick Start
+## Table of Contents
+
+- [Project Overview](#project-overview)
+- [System Architecture](#system-architecture)
+- [Quick Start](#quick-start)
+- [Detailed Architecture](#detailed-architecture)
+- [Development Guide](#development-guide)
+- [Deployment](#deployment)
+- [API Reference](#api-reference)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+
+---
+
+## Project Overview
+
+### What is AgentCore Voice Agent?
+
+AgentCore Voice Agent is a comprehensive multi-agent system that provides:
+
+- **Bi-directional Voice Streaming**: Real-time voice conversations using Amazon Nova Sonic
+- **Multi-Agent Orchestration**: Intelligent routing to specialist agents (vision, document, data, tool)
+- **Persistent Memory**: AgentCore Memory integration for conversation continuity
+- **Multimodal Support**: Image, video, and document processing capabilities
+- **Production-Ready**: Docker containerization, AWS CDK infrastructure, comprehensive testing
+
+### Key Features
+
+- ✅ **6 Specialized Agents**: Orchestrator, Vision, Document, Data, Tool, and Voice
+- ✅ **A2A Protocol**: Industry-standard agent-to-agent communication
+- ✅ **WebSocket Streaming**: Real-time bi-directional audio streaming
+- ✅ **Memory Integration**: Session summaries, user preferences, semantic memory
+- ✅ **Google OAuth2**: Secure user authentication
+- ✅ **Multimodal Content**: Image and video analysis
+- ✅ **Tool Integration**: Calculator, weather API, database queries
+- ✅ **Docker Compose**: Local development environment
+- ✅ **AWS CDK**: Infrastructure as code for production deployment
+
+### Architecture at a Glance
+
+The system consists of two main communication patterns:
+
+1. **Text-Based Multi-Agent System**: Orchestrator routes requests to specialist agents via A2A protocol
+2. **Voice Agent**: Standalone bi-directional streaming agent for real-time voice conversations
+
+Both systems share AgentCore Memory for persistent context and user preferences.
+
+### Technology Stack
+
+- **Framework**: Strands (AWS SDK for AI agents)
+- **Protocols**: A2A (JSON-RPC 2.0) for text agents, WebSocket for voice
+- **Models**: Amazon Nova (Pro, Lite, Canvas, Sonic)
+- **Memory**: AgentCore Memory (AWS Bedrock)
+- **Backend**: FastAPI, Uvicorn
+- **Frontend**: Vanilla JavaScript, Web Audio API
+- **Infrastructure**: Docker Compose, AWS CDK
+- **Authentication**: Google OAuth2, JWT tokens
+
+---
+
+## System Architecture
+
+### High-Level Architecture
+
+```mermaid
+graph TB
+    subgraph "Client Layer"
+        WebClient[Web Client<br/>HTML/JS/CSS]
+        VoiceClient[Voice Interface<br/>Web Audio API]
+        TextClient[Text Interface<br/>HTTP/REST]
+    end
+    
+    subgraph "Multi-Agent System"
+        Orchestrator[Orchestrator Agent<br/>Port 9000<br/>A2A Protocol]
+        Vision[Vision Agent<br/>Port 9001<br/>A2A Protocol]
+        Document[Document Agent<br/>Port 9002<br/>A2A Protocol]
+        Data[Data Agent<br/>Port 9003<br/>A2A Protocol]
+        Tool[Tool Agent<br/>Port 9004<br/>A2A Protocol]
+    end
+    
+    subgraph "Voice Agent"
+        VoiceAgent[Voice Agent<br/>Port 8080<br/>WebSocket]
+    end
+    
+    subgraph "AWS Services"
+        Bedrock[Amazon Bedrock<br/>Nova Models]
+        Memory[AgentCore Memory<br/>Session/Preferences/Semantic]
+        Secrets[AWS Secrets Manager<br/>OAuth/JWT Secrets]
+    end
+    
+    subgraph "Shared Components"
+        MemoryClient[Memory Client]
+        Auth[Authentication<br/>Google OAuth2]
+    end
+    
+    WebClient -->|HTTP/REST| Orchestrator
+    WebClient -->|WebSocket| VoiceAgent
+    TextClient -->|HTTP/REST| Orchestrator
+    VoiceClient -->|WebSocket| VoiceAgent
+    
+    Orchestrator -->|A2A Protocol| Vision
+    Orchestrator -->|A2A Protocol| Document
+    Orchestrator -->|A2A Protocol| Data
+    Orchestrator -->|A2A Protocol| Tool
+    
+    Orchestrator --> MemoryClient
+    Vision --> MemoryClient
+    Document --> MemoryClient
+    Data --> MemoryClient
+    Tool --> MemoryClient
+    VoiceAgent --> MemoryClient
+    
+    MemoryClient --> Memory
+    
+    Orchestrator --> Bedrock
+    Vision --> Bedrock
+    Document --> Bedrock
+    Data --> Bedrock
+    Tool --> Bedrock
+    VoiceAgent --> Bedrock
+    
+    Orchestrator --> Auth
+    VoiceAgent --> Auth
+    Auth --> Secrets
+```
+
+### Agent Descriptions
+
+#### Orchestrator Agent
+- **Port**: 9000 (HTTP REST), 9005 (A2A server)
+- **Model**: Amazon Nova Pro (`us.amazon.nova-pro-v1:0`)
+- **Purpose**: Routes user requests to appropriate specialist agents
+- **Capabilities**: Intent classification, request routing, response synthesis
+- **Protocol**: A2A (JSON-RPC 2.0)
+
+#### Vision Agent
+- **Port**: 9001
+- **Model**: Amazon Nova Pro (`us.amazon.nova-pro-v1:0`)
+- **Purpose**: Image and video analysis, visual content understanding
+- **Capabilities**: Object detection, scene analysis, OCR, multimodal content processing
+- **Protocol**: A2A (JSON-RPC 2.0)
+
+#### Document Agent
+- **Port**: 9002
+- **Model**: Amazon Nova Pro (`us.amazon.nova-pro-v1:0`)
+- **Purpose**: Document processing and text extraction
+- **Capabilities**: PDF analysis, text extraction, document summarization
+- **Protocol**: A2A (JSON-RPC 2.0)
+
+#### Data Agent
+- **Port**: 9003
+- **Model**: Amazon Nova Lite (`us.amazon.nova-lite-v1:0`)
+- **Purpose**: Data analysis and SQL queries
+- **Capabilities**: SQL query generation, data visualization, statistical analysis
+- **Protocol**: A2A (JSON-RPC 2.0)
+
+#### Tool Agent
+- **Port**: 9004
+- **Model**: Amazon Nova Lite (`us.amazon.nova-lite-v1:0`)
+- **Purpose**: Calculator, weather, and general utilities
+- **Capabilities**: Mathematical calculations, weather API integration, database queries
+- **Protocol**: A2A (JSON-RPC 2.0)
+- **Tools**: Calculator, Weather API, Database Query
+
+#### Voice Agent
+- **Port**: 8080
+- **Model**: Amazon Nova 2 Sonic (`amazon.nova-2-sonic-v1:0`)
+- **Purpose**: Bi-directional voice streaming
+- **Capabilities**: Real-time speech-to-speech, voice interruptions, audio streaming
+- **Protocol**: WebSocket (bi-directional)
+- **Note**: Independent from multi-agent orchestration system
+
+### Communication Protocols
+
+#### A2A Protocol (Text Agents)
+- **Transport**: JSON-RPC 2.0 over HTTP
+- **Port**: 9000 (standard A2A port)
+- **Discovery**: Agent Cards at `/.well-known/agent-card.json`
+- **Authentication**: Docker network isolation (local), IAM (production)
+- **Format**: JSON-RPC 2.0 request/response
+
+#### WebSocket Protocol (Voice Agent)
+- **Transport**: WebSocket (WS/WSS)
+- **Port**: 8080
+- **Format**: JSON messages with base64-encoded audio
+- **Audio**: 16kHz PCM input, 24kHz PCM output
+- **Features**: Bi-directional streaming, real-time transcription
+
+---
+
+## Quick Start
 
 ### Prerequisites
-- AWS Account with credentials configured
-- Python 3.10+
-- Docker (optional)
-- Amazon Nova Sonic model access enabled
-- **macOS users**: Install PortAudio via Homebrew: `brew install portaudio`
 
-### Installation
+- **Python**: 3.10+ (3.11 for multi-agent system, 3.12 for voice agent)
+- **Docker**: Docker and Docker Compose installed
+- **AWS Account**: With Bedrock access configured
+- **AWS CLI**: Configured with credentials
+- **PortAudio**: Required for voice agent (macOS: `brew install portaudio`)
+
+### Environment Configuration
+
+Create a `.env` file in the project root:
 
 ```bash
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+# AWS Configuration
+AWS_REGION=us-west-2
+AWS_PROFILE=default  # Optional: for named profiles
+AGENTCORE_MEMORY_REGION=us-west-2
 
-# Install dependencies
-pip install -r requirements.txt
+# AgentCore Memory (optional - leave empty to disable)
+AGENTCORE_MEMORY_ID=your-memory-id-here
 
-# Configure environment
-cp .env.example .env
-# Edit .env with your AWS credentials
+# Model Configuration (optional - defaults shown)
+ORCHESTRATOR_MODEL=us.amazon.nova-pro-v1:0
+VISION_MODEL=us.amazon.nova-pro-v1:0
+DOCUMENT_MODEL=us.amazon.nova-pro-v1:0
+DATA_MODEL=us.amazon.nova-lite-v1:0
+TOOL_MODEL=us.amazon.nova-lite-v1:0
+MODEL_ID=amazon.nova-2-sonic-v1:0  # Voice agent
+
+# Google OAuth2 (optional - for authentication)
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-client-secret
+GOOGLE_REDIRECT_URI=http://localhost:9000/api/auth/callback
+GOOGLE_WORKSPACE_DOMAIN=  # Optional: restrict to domain
+
+# JWT Configuration (optional)
+JWT_SECRET_KEY=your-generated-secret-key
+JWT_ALGORITHM=HS256
+JWT_EXPIRATION_MINUTES=60
+
+# Tool Configuration (optional)
+WEATHER_API_KEY=your-weather-api-key  # For weather tool
 ```
 
-### Run Locally
+### Local Setup with Docker Compose
+
+1. **Clone the repository**:
+   ```bash
+   git clone <repository-url>
+   cd agentcore-voice-agent
+   ```
+
+2. **Create `.env` file** (see above)
+
+3. **Start all agents**:
+   ```bash
+   docker-compose up --build
+   ```
+
+   This starts:
+   - Orchestrator on port 9000
+   - Vision agent on port 9001
+   - Document agent on port 9002
+   - Data agent on port 9003
+   - Tool agent on port 9004
+   - Voice agent on port 8080
+
+4. **Verify agents are running**:
+   ```bash
+   # Check orchestrator
+   curl http://localhost:9000/.well-known/agent-card.json | jq
+   
+   # Check vision agent
+   curl http://localhost:9001/.well-known/agent-card.json | jq
+   
+   # Check voice agent
+   curl http://localhost:8080/ping
+   ```
+
+5. **Open web client**:
+   - Navigate to `http://localhost:8080` in your browser
+   - The web client supports both voice and text modes
+
+### Testing the System
+
+#### Test Text-Based Multi-Agent System
 
 ```bash
-# Start the agent
+# Test orchestrator routing to vision agent
+curl -X POST http://localhost:9000 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "task",
+    "params": {
+      "task": "Analyze this image of a sunset",
+      "user_id": "test-user",
+      "session_id": "test-session"
+    },
+    "id": 1
+  }' | jq
+
+# Test tool agent directly
+curl -X POST http://localhost:9004 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "task",
+    "params": {
+      "task": "What is 15% of 200?",
+      "user_id": "test-user",
+      "session_id": "test-session"
+    },
+    "id": 1
+  }' | jq
+```
+
+#### Test Voice Agent
+
+1. Open `http://localhost:8080` in your browser
+2. Click "Connect" to establish WebSocket connection
+3. Click "Start Recording" to begin voice conversation
+4. Speak into your microphone
+5. Agent responses will be played through speakers
+
+### Running Individual Agents
+
+#### Voice Agent Only
+
+```bash
+# From project root
 python src/agent.py
-
-# In another terminal, open the web client
-open client/web/index.html
 ```
 
-### Deploy to AgentCore Runtime
-
-#### Using AgentCore CLI
+#### Multi-Agent System (without voice)
 
 ```bash
-# Install CLI
-pip install bedrock-agentcore-starter-toolkit
-
-# Configure and deploy
-agentcore configure -e src/agent.py
-agentcore launch
-
-# Test deployed agent
-agentcore invoke '{"prompt": "Hello!"}'
+# Start orchestrator and specialist agents
+docker-compose up orchestrator vision document data tool
 ```
 
-#### Building Docker Image
-
-The Dockerfile includes PortAudio (`portaudio19-dev`) as a system dependency, which is required for the `pyaudio` Python package used by the Strands library.
-
-**Note:** AgentCore Runtime requires ARM64 architecture. Build your Docker image accordingly:
+#### All Agents
 
 ```bash
-# Build for ARM64 (required for AgentCore Runtime)
-docker buildx build --platform linux/arm64 -t agentcore-voice-agent:latest .
-
-# Or if using Docker Desktop with buildx
-docker build --platform linux/arm64 -t agentcore-voice-agent:latest .
+docker-compose up
 ```
 
-The Dockerfile automatically installs:
-- PortAudio development libraries (`portaudio19-dev`)
-- Audio processing libraries (`libsndfile1`)
-- Compiler tools needed for building Python packages
+---
 
-## 📚 Documentation
+## Detailed Architecture
 
-- See `docs/` folder for detailed documentation
-- [AgentCore Samples](https://github.com/awslabs/amazon-bedrock-agentcore-samples)
-- [AWS Blog Post](https://aws.amazon.com/blogs/machine-learning/bi-directional-streaming-for-real-time-agent-interactions-now-available-in-amazon-bedrock-agentcore-runtime/)
+### Multi-Agent Communication Flow
 
-## 🔧 Features
+```mermaid
+sequenceDiagram
+    participant User
+    participant WebClient
+    participant Orchestrator
+    participant Specialist as Specialist Agent<br/>(Vision/Document/Data/Tool)
+    participant Bedrock
+    participant Memory as AgentCore Memory
+    
+    User->>WebClient: Submit request
+    WebClient->>Orchestrator: HTTP POST (JSON-RPC 2.0)
+    
+    Note over Orchestrator: Intent Classification
+    Orchestrator->>Orchestrator: Classify intent using Nova Pro
+    
+    Note over Orchestrator: Route to Specialist
+    Orchestrator->>Specialist: A2A Protocol (JSON-RPC 2.0)
+    
+    Note over Specialist: Load Context
+    Specialist->>Memory: Retrieve session context
+    Memory-->>Specialist: Return context
+    
+    Note over Specialist: Process Request
+    Specialist->>Bedrock: Generate response
+    Bedrock-->>Specialist: Return response
+    
+    Note over Specialist: Store Interaction
+    Specialist->>Memory: Store user input & response
+    Memory-->>Specialist: Confirm storage
+    
+    Specialist-->>Orchestrator: Return response
+    Orchestrator-->>WebClient: Return response
+    WebClient-->>User: Display response
+```
 
-- ✅ Bi-directional streaming with WebSocket
-- ✅ Real-time voice conversations
-- ✅ Tool integration (calculator, weather, database)
-- ✅ Production-ready with health checks
-- ✅ Docker containerization
-- ✅ Web test client included
-- ✅ Comprehensive unit test suite
+### Voice Agent Streaming Flow
 
-## 🧪 Testing
+```mermaid
+sequenceDiagram
+    participant User
+    participant Browser
+    participant VoiceAgent
+    participant NovaSonic as Nova Sonic Model
+    participant Memory as AgentCore Memory
+    
+    User->>Browser: Speak into microphone
+    Browser->>Browser: Capture audio (Web Audio API)
+    Browser->>Browser: Convert to PCM (16kHz, mono)
+    Browser->>Browser: Encode to Base64
+    Browser->>VoiceAgent: WebSocket: Send audio chunk (JSON)
+    
+    VoiceAgent->>VoiceAgent: Parse BidiAudioInputEvent
+    VoiceAgent->>NovaSonic: Stream audio input
+    NovaSonic->>VoiceAgent: Generate audio + transcript
+    
+    Note over VoiceAgent: Store in Memory
+    VoiceAgent->>Memory: Store conversation events
+    Memory-->>VoiceAgent: Confirm storage
+    
+    VoiceAgent->>Browser: WebSocket: Send audio chunk (JSON)
+    Browser->>Browser: Decode Base64 to PCM
+    Browser->>Browser: Convert to Float32
+    Browser->>Browser: Play audio (Web Audio API)
+    Browser->>User: Play agent response
+    
+    Note over Browser,Memory: Bi-directional streaming<br/>allows interruptions
+```
 
-The project includes a comprehensive unit test suite. See [tests/README.md](tests/README.md) for detailed testing documentation.
+### A2A Protocol Sequence
 
-### Quick Start
+```mermaid
+sequenceDiagram
+    participant Orchestrator
+    participant A2AClient as A2A Client
+    participant Specialist as Specialist Agent
+    participant A2AServer as A2A Server
+    
+    Orchestrator->>A2AClient: Call agent(agent_name, request)
+    A2AClient->>A2AClient: Get endpoint from service discovery
+    A2AClient->>A2AClient: Create JWT token (if needed)
+    A2AClient->>A2AServer: HTTP POST (JSON-RPC 2.0)
+    
+    Note over A2AServer: Validate request
+    A2AServer->>Specialist: Invoke agent.process()
+    
+    Note over Specialist: Process with Strands
+    Specialist->>Specialist: Load context from memory
+    Specialist->>Specialist: Generate response
+    Specialist-->>A2AServer: Return response
+    
+    A2AServer-->>A2AClient: JSON-RPC 2.0 response
+    A2AClient-->>Orchestrator: Return AgentResponse
+```
+
+### Memory Integration Flow
+
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant SessionManager as Session Manager
+    participant MemoryClient as Memory Client
+    participant AgentCore as AgentCore Memory
+    
+    Note over Agent,AgentCore: Session Initialization
+    Agent->>SessionManager: initialize()
+    SessionManager->>MemoryClient: list_sessions(actor_id)
+    MemoryClient->>AgentCore: Query past sessions
+    AgentCore-->>MemoryClient: Return session summaries
+    MemoryClient-->>SessionManager: Return summaries
+    SessionManager->>SessionManager: Build context string
+    SessionManager-->>Agent: Update system prompt
+    
+    Note over Agent,AgentCore: During Conversation
+    Agent->>SessionManager: store_user_input()
+    SessionManager->>MemoryClient: create_event(user_input)
+    MemoryClient->>AgentCore: Store event
+    
+    Agent->>SessionManager: store_agent_response()
+    SessionManager->>MemoryClient: create_event(agent_response)
+    MemoryClient->>AgentCore: Store event
+    
+    Note over Agent,AgentCore: Session Finalization
+    Agent->>SessionManager: finalize()
+    SessionManager->>MemoryClient: Finalize session
+    MemoryClient->>AgentCore: Trigger summary generation
+    Note over AgentCore: Generate summary (async, 20-40s delay)
+```
+
+### Authentication Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Browser
+    participant Agent
+    participant Google
+    participant Secrets as Secrets Manager
+    
+    User->>Browser: Click "Sign in with Google"
+    Browser->>Agent: GET /api/auth/login
+    Agent->>Google: Redirect to OAuth2
+    Google->>User: Authenticate
+    Google->>Agent: GET /api/auth/callback?code=...
+    Agent->>Google: Exchange code for token
+    Google-->>Agent: Return ID token
+    Agent->>Agent: Verify token & extract user info
+    Agent->>Agent: Create JWT token
+    Agent->>Browser: Redirect with token
+    Browser->>Browser: Store token (localStorage)
+    
+    Note over Browser,Agent: Subsequent Requests
+    Browser->>Agent: WebSocket /ws?token=...
+    Agent->>Agent: Verify JWT token
+    Agent->>Secrets: Get JWT secret (if needed)
+    Secrets-->>Agent: Return secret
+    Agent->>Agent: Initialize session (actor_id)
+    Agent-->>Browser: WebSocket connection established
+```
+
+### Docker Compose Network Topology
+
+```mermaid
+graph TB
+    subgraph "Docker Network: agent-network"
+        Orchestrator[Orchestrator<br/>9000:9000<br/>9005:9001]
+        Vision[Vision<br/>9001:9000]
+        Document[Document<br/>9002:9000]
+        Data[Data<br/>9003:9000]
+        Tool[Tool<br/>9004:9000]
+        Voice[Voice<br/>8080:8080]
+    end
+    
+    subgraph "Host Machine"
+        WebClient[Web Client<br/>Browser]
+        Host9000[localhost:9000]
+        Host9001[localhost:9001]
+        Host9002[localhost:9002]
+        Host9003[localhost:9003]
+        Host9004[localhost:9004]
+        Host8080[localhost:8080]
+    end
+    
+    WebClient --> Host9000
+    WebClient --> Host9001
+    WebClient --> Host9002
+    WebClient --> Host9003
+    WebClient --> Host9004
+    WebClient --> Host8080
+    
+    Host9000 --> Orchestrator
+    Host9001 --> Vision
+    Host9002 --> Document
+    Host9003 --> Data
+    Host9004 --> Tool
+    Host8080 --> Voice
+    
+    Orchestrator -->|A2A| Vision
+    Orchestrator -->|A2A| Document
+    Orchestrator -->|A2A| Data
+    Orchestrator -->|A2A| Tool
+```
+
+### AWS Infrastructure Architecture
+
+```mermaid
+graph TB
+    subgraph "AWS Account"
+        subgraph "AgentCore Runtime"
+            OrchestratorRT[Orchestrator Runtime]
+            VisionRT[Vision Runtime]
+            DocumentRT[Document Runtime]
+            DataRT[Data Runtime]
+            ToolRT[Tool Runtime]
+            VoiceRT[Voice Runtime]
+        end
+        
+        subgraph "Storage & Configuration"
+            ECR[ECR Repositories<br/>Container Images]
+            Secrets[Secrets Manager<br/>OAuth/JWT Secrets]
+            SSM[SSM Parameter Store<br/>Memory ID]
+            CloudWatch[CloudWatch Logs<br/>Application Logs]
+        end
+        
+        subgraph "AWS Services"
+            Bedrock[Amazon Bedrock<br/>Nova Models]
+            Memory[AgentCore Memory<br/>Session/Preferences]
+        end
+    end
+    
+    OrchestratorRT --> Bedrock
+    VisionRT --> Bedrock
+    DocumentRT --> Bedrock
+    DataRT --> Bedrock
+    ToolRT --> Bedrock
+    VoiceRT --> Bedrock
+    
+    OrchestratorRT --> Memory
+    VisionRT --> Memory
+    DocumentRT --> Memory
+    DataRT --> Memory
+    ToolRT --> Memory
+    VoiceRT --> Memory
+    
+    OrchestratorRT --> Secrets
+    VisionRT --> Secrets
+    DocumentRT --> Secrets
+    DataRT --> Secrets
+    ToolRT --> Secrets
+    VoiceRT --> Secrets
+    
+    OrchestratorRT --> CloudWatch
+    VisionRT --> CloudWatch
+    DocumentRT --> CloudWatch
+    DataRT --> CloudWatch
+    ToolRT --> CloudWatch
+    VoiceRT --> CloudWatch
+    
+    ECR --> OrchestratorRT
+    ECR --> VisionRT
+    ECR --> DocumentRT
+    ECR --> DataRT
+    ECR --> ToolRT
+    ECR --> VoiceRT
+```
+
+### Memory Strategies
+
+The system uses three AgentCore Memory strategies:
+
+1. **Session Summarizer** (`/summaries/{actorId}/{sessionId}`)
+   - Captures conversation summaries
+   - Generated asynchronously after session ends (20-40 second delay)
+   - Used for context in future sessions
+
+2. **User Preferences** (`/preferences/{actorId}`)
+   - Stores user preferences and behavior patterns
+   - Persists across sessions
+   - Enables personalized responses
+
+3. **Semantic Memory** (`/semantic/{actorId}`)
+   - Vector embeddings for factual information
+   - Enables semantic search for relevant memories
+   - Supports context retrieval based on query similarity
+
+---
+
+## Development Guide
+
+### Project Structure
+
+```
+agentcore-voice-agent/
+├── agents/                    # Multi-agent system
+│   ├── orchestrator/          # Orchestrator agent
+│   │   ├── app.py            # FastAPI + A2A server
+│   │   ├── agent.py          # Orchestrator logic
+│   │   ├── a2a_client.py     # A2A communication client
+│   │   ├── Dockerfile
+│   │   └── requirements.txt
+│   ├── vision/                # Vision agent
+│   │   ├── app.py            # A2A server
+│   │   ├── agent.py          # Vision processing logic
+│   │   ├── Dockerfile
+│   │   └── requirements.txt
+│   ├── document/              # Document agent
+│   ├── data/                  # Data agent
+│   ├── tool/                  # Tool agent
+│   │   └── tools/            # Tool implementations
+│   │       ├── calculator.py
+│   │       ├── weather.py
+│   │       └── database.py
+│   ├── voice/                 # Voice agent (standalone)
+│   │   ├── app.py            # WebSocket server
+│   │   ├── Dockerfile
+│   │   └── requirements.txt
+│   └── shared/                # Shared components
+│       ├── models.py         # Pydantic models
+│       ├── memory_client.py   # Memory client
+│       ├── auth.py           # Inter-agent auth
+│       ├── observability.py  # Logging/metrics
+│       ├── circuit_breaker.py
+│       └── retry.py
+├── src/                       # Legacy/voice agent source
+│   ├── agent.py              # Voice agent implementation
+│   ├── memory/               # Memory client
+│   ├── auth/                 # OAuth2 authentication
+│   ├── tools/                # Tools (calculator, weather, database)
+│   └── config/               # Configuration
+├── client/                    # Web client
+│   └── web/
+│       ├── index.html        # Main HTML
+│       └── app.js            # JavaScript application
+├── infrastructure/           # AWS CDK infrastructure
+│   └── cdk/
+│       ├── app.py            # CDK app entry point
+│       ├── agentcore_stack.py
+│       ├── agentcore_runtime_stack.py
+│       ├── multi_agent_stack.py
+│       └── vision_stack.py
+├── tests/                     # Test suite
+│   ├── unit/                 # Unit tests
+│   └── integration/          # Integration tests
+├── scripts/                   # Utility scripts
+│   ├── manage_memory.py     # Memory management
+│   ├── fix_mfa.py           # MFA credential helper
+│   └── darcy_memory.py       # Memory debugging
+├── docs/                      # Documentation
+├── docker-compose.yml        # Local development
+└── requirements.txt          # Root dependencies
+```
+
+### Adding a New Agent
+
+1. **Create agent directory**:
+   ```bash
+   mkdir -p agents/newagent
+   ```
+
+2. **Create agent implementation** (`agents/newagent/agent.py`):
+   ```python
+   from strands import Agent
+   from agents.shared.models import AgentRequest, AgentResponse
+   from agents.shared.memory_client import MemoryClient
+   from agents.shared.observability import AgentLogger
+   
+   class NewAgent:
+       def __init__(self):
+           self.agent_name = "newagent"
+           self.logger = AgentLogger(self.agent_name)
+           self.memory = MemoryClient()
+           self.strands_agent = Agent(
+               model=os.getenv("NEWAGENT_MODEL", "amazon.nova-pro-v1:0"),
+               system_prompt="Your system prompt here"
+           )
+       
+       async def process(self, request: AgentRequest) -> AgentResponse:
+           # Implementation
+           pass
+   ```
+
+3. **Create A2A server** (`agents/newagent/app.py`):
+   ```python
+   from strands.multiagent.a2a import A2AServer
+   from agents.newagent.agent import NewAgent
+   
+   agent = NewAgent()
+   server = A2AServer(agent=agent, port=9000)
+   server.start()
+   ```
+
+4. **Add to docker-compose.yml**:
+   ```yaml
+   newagent:
+     build:
+       context: .
+       dockerfile: agents/newagent/Dockerfile
+     ports:
+       - "9006:9000"
+     environment:
+       - NEWAGENT_MODEL=${NEWAGENT_MODEL:-amazon.nova-pro-v1:0}
+     networks:
+       - agent-network
+   ```
+
+5. **Update orchestrator** to route to new agent
+
+### Adding a New Tool
+
+1. **Create tool file** (`agents/tool/tools/newtool.py`):
+   ```python
+   from strands.tools import tool
+   
+   @tool
+   def new_tool(param1: str, param2: int) -> str:
+       """Tool description for the agent."""
+       # Implementation
+       return result
+   ```
+
+2. **Import in agent** (`agents/tool/agent.py`):
+   ```python
+   from agents.tool.tools.newtool import new_tool
+   
+   self.strands_agent = Agent(
+       model=model_id,
+       tools=[calculator, weather_api, database_query, new_tool],
+       system_prompt=self._get_system_prompt()
+   )
+   ```
+
+### Testing Guidelines
+
+#### Unit Tests
 
 ```bash
-# Run all tests
-pytest
-
-# Run with coverage report
-pytest --cov=src --cov-report=html --cov-report=term
+# Run all unit tests
+pytest tests/unit/
 
 # Run specific test file
 pytest tests/unit/test_tools/test_calculator.py
+
+# Run with coverage
+pytest --cov=src --cov-report=html
 ```
 
-### Test Coverage
+#### Integration Tests
 
-- Tools: 90%+ coverage
-- Agent Components: 80%+ coverage
-- Endpoints: 90%+ coverage
+```bash
+# Start agents first
+docker-compose up -d
 
-## 📄 License
+# Run integration tests
+pytest tests/integration/
+
+# Test A2A communication
+pytest tests/integration/test_a2a_communication.py
+```
+
+#### Test Coverage Goals
+
+- **Tools**: 90%+ coverage
+- **Agent Components**: 80%+ coverage
+- **Endpoints**: 90%+ coverage
+- **Memory Modules**: 90%+ coverage
+
+### Development Workflow
+
+1. **Create feature branch**:
+   ```bash
+   git checkout -b feature/new-feature
+   ```
+
+2. **Make changes**:
+   - Write code
+   - Add tests
+   - Update documentation
+
+3. **Test locally**:
+   ```bash
+   docker-compose up --build
+   pytest
+   ```
+
+4. **Commit and push**:
+   ```bash
+   git commit -m "Add new feature"
+   git push origin feature/new-feature
+   ```
+
+---
+
+## Deployment
+
+### Prerequisites
+
+- AWS Account with Bedrock access
+- AWS CLI configured
+- Docker installed
+- CDK CLI installed: `npm install -g aws-cdk`
+
+### AWS CDK Deployment
+
+1. **Install CDK dependencies**:
+   ```bash
+   cd infrastructure/cdk
+   pip install -r requirements.txt
+   ```
+
+2. **Bootstrap CDK** (first time only):
+   ```bash
+   cdk bootstrap aws://ACCOUNT-ID/us-west-2
+   ```
+
+3. **Create AgentCore Memory**:
+   ```bash
+   # From project root
+   python scripts/manage_memory.py create
+   ```
+
+4. **Build and push Docker images**:
+   ```bash
+   # Build images
+   docker buildx build --platform linux/arm64 -t orchestrator:latest -f agents/orchestrator/Dockerfile .
+   docker buildx build --platform linux/arm64 -t vision:latest -f agents/vision/Dockerfile .
+   # ... repeat for other agents
+   
+   # Tag and push to ECR
+   ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+   REGION=us-west-2
+   
+   aws ecr get-login-password --region $REGION | \
+     docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
+   
+   docker tag orchestrator:latest $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/orchestrator:latest
+   docker push $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/orchestrator:latest
+   # ... repeat for other agents
+   ```
+
+5. **Deploy CDK stacks**:
+   ```bash
+   cd infrastructure/cdk
+   cdk deploy --all
+   ```
+
+### Secrets Configuration
+
+After deployment, configure secrets in AWS Secrets Manager:
+
+#### Google OAuth2 Credentials
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id agentcore/voice-agent/google-oauth2 \
+  --secret-string '{
+    "client_id": "your-client-id.apps.googleusercontent.com",
+    "client_secret": "your-client-secret",
+    "redirect_uri": "https://your-endpoint/api/auth/callback"
+  }'
+```
+
+#### JWT Secret
+
+```bash
+JWT_SECRET=$(openssl rand -hex 32)
+aws secretsmanager put-secret-value \
+  --secret-id agentcore/voice-agent/jwt-secret \
+  --secret-string "{\"secret_key\": \"$JWT_SECRET\"}"
+```
+
+#### Agent Auth Secret (for A2A)
+
+```bash
+AGENT_AUTH_SECRET=$(openssl rand -hex 32)
+aws secretsmanager put-secret-value \
+  --secret-id agentcore/voice-agent/agent-auth-secret \
+  --secret-string "{\"secret_key\": \"$AGENT_AUTH_SECRET\"}"
+```
+
+### Updating Individual Agents
+
+To update only one agent:
+
+```bash
+# Build and push new image
+docker buildx build --platform linux/arm64 -t vision:latest -f agents/vision/Dockerfile .
+docker tag vision:latest $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/vision:latest
+docker push $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/vision:latest
+
+# Deploy updated stack
+cd infrastructure/cdk
+cdk deploy VisionStack
+```
+
+### Monitoring
+
+- **CloudWatch Logs**: Application logs for each agent
+- **CloudWatch Metrics**: Performance and error metrics
+- **AgentCore Runtime**: Built-in observability dashboard
+
+---
+
+## API Reference
+
+### Orchestrator Agent
+
+#### Endpoints
+
+- **HTTP REST API**: `http://localhost:9000`
+- **A2A Server**: `http://localhost:9005` (internal)
+
+#### JSON-RPC 2.0 Task Method
+
+```json
+POST http://localhost:9000
+Content-Type: application/json
+
+{
+  "jsonrpc": "2.0",
+  "method": "task",
+  "params": {
+    "task": "Analyze this image",
+    "user_id": "user@example.com",
+    "session_id": "session-uuid"
+  },
+  "id": 1
+}
+```
+
+**Response**:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "content": "The image shows...",
+    "agent_name": "orchestrator",
+    "metadata": {
+      "specialist": "vision"
+    }
+  }
+}
+```
+
+#### Agent Card
+
+```bash
+GET http://localhost:9000/.well-known/agent-card.json
+```
+
+### Specialist Agents (Vision, Document, Data, Tool)
+
+All specialist agents follow the same A2A protocol:
+
+#### Endpoints
+
+- **Vision**: `http://localhost:9001`
+- **Document**: `http://localhost:9002`
+- **Data**: `http://localhost:9003`
+- **Tool**: `http://localhost:9004`
+
+#### JSON-RPC 2.0 Task Method
+
+Same format as orchestrator, but agents process requests directly.
+
+### Voice Agent
+
+#### WebSocket Endpoint
+
+```
+ws://localhost:8080/ws?token=<jwt-token>
+```
+
+#### Message Types (Client → Server)
+
+**Audio Input**:
+```json
+{
+  "audio": "base64-encoded-pcm-data",
+  "sample_rate": 16000,
+  "format": "pcm",
+  "channels": 1
+}
+```
+
+**Text Input**:
+```json
+{
+  "text": "Hello, how are you?",
+  "input_type": "text"
+}
+```
+
+#### Message Types (Server → Client)
+
+**Audio Output**:
+```json
+{
+  "type": "audio",
+  "data": "base64-encoded-pcm-data",
+  "format": "pcm",
+  "sample_rate": 24000
+}
+```
+
+**Transcript**:
+```json
+{
+  "type": "transcript",
+  "data": "Hello, I'm doing well!",
+  "role": "assistant"
+}
+```
+
+**Tool Use**:
+```json
+{
+  "type": "tool_use",
+  "tool": "calculator",
+  "data": "15 * 20 = 300"
+}
+```
+
+**Error**:
+```json
+{
+  "type": "error",
+  "message": "Error description"
+}
+```
+
+#### HTTP Endpoints
+
+- **Health Check**: `GET http://localhost:8080/ping`
+- **OAuth Login**: `GET http://localhost:8080/api/auth/login`
+- **OAuth Callback**: `GET http://localhost:8080/api/auth/callback`
+- **User Info**: `GET http://localhost:8080/api/auth/me`
+
+### A2A Protocol Specification
+
+The A2A protocol uses JSON-RPC 2.0 over HTTP:
+
+#### Request Format
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "task",
+  "params": {
+    "task": "string",
+    "user_id": "string",
+    "session_id": "string"
+  },
+  "id": 1
+}
+```
+
+#### Response Format
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "content": "string",
+    "agent_name": "string",
+    "metadata": {}
+  }
+}
+```
+
+#### Error Format
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32000,
+    "message": "Error description"
+  }
+}
+```
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+#### Agents Won't Start
+
+**Symptoms**: Docker containers fail to start or exit immediately
+
+**Solutions**:
+1. Check AWS credentials:
+   ```bash
+   aws sts get-caller-identity
+   ```
+
+2. Verify Docker is running:
+   ```bash
+   docker ps
+   ```
+
+3. Check logs:
+   ```bash
+   docker-compose logs orchestrator
+   ```
+
+4. Verify environment variables in `.env` file
+
+#### A2A Communication Fails
+
+**Symptoms**: Orchestrator cannot reach specialist agents
+
+**Solutions**:
+1. Verify all agents are running:
+   ```bash
+   docker-compose ps
+   ```
+
+2. Check network connectivity:
+   ```bash
+   docker-compose exec orchestrator curl http://vision:9000/.well-known/agent-card.json
+   ```
+
+3. Verify service names match in `docker-compose.yml`
+
+4. Check A2A server is running on correct port (9001 internally)
+
+#### Memory Not Working
+
+**Symptoms**: Agents don't retrieve or store conversation context
+
+**Solutions**:
+1. Verify `AGENTCORE_MEMORY_ID` is set:
+   ```bash
+   echo $AGENTCORE_MEMORY_ID
+   ```
+
+2. Check memory exists:
+   ```bash
+   python scripts/manage_memory.py status
+   ```
+
+3. Verify AWS credentials have permissions:
+   ```bash
+   aws bedrock-agentcore get-memory --memory-id $AGENTCORE_MEMORY_ID
+   ```
+
+4. Check memory region matches:
+   - `AGENTCORE_MEMORY_REGION` should match memory creation region
+
+#### Voice Agent Audio Issues
+
+**Symptoms**: No audio input/output, microphone not working
+
+**Solutions**:
+1. Check browser permissions for microphone access
+2. Verify PortAudio is installed (macOS: `brew install portaudio`)
+3. Check browser console for Web Audio API errors
+4. Verify WebSocket connection is established
+5. Check sample rate configuration (16kHz input, 24kHz output)
+
+#### Authentication Errors
+
+**Symptoms**: OAuth2 login fails, JWT verification errors
+
+**Solutions**:
+1. Verify Google OAuth2 credentials:
+   - Check `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`
+   - Verify redirect URI matches Google Cloud Console
+
+2. Check JWT secret:
+   ```bash
+   echo $JWT_SECRET_KEY
+   ```
+
+3. Verify token expiration:
+   - Default: 60 minutes
+   - Check `JWT_EXPIRATION_MINUTES` setting
+
+4. Check Google Workspace domain restriction (if enabled)
+
+### Debugging Tips
+
+#### Enable Verbose Logging
+
+Set log level in agent code:
+```python
+import logging
+logging.basicConfig(level=logging.DEBUG)
+```
+
+#### Check Agent Logs
+
+```bash
+# View all logs
+docker-compose logs -f
+
+# View specific agent
+docker-compose logs -f orchestrator
+
+# View last 100 lines
+docker-compose logs --tail=100 orchestrator
+```
+
+#### Test A2A Communication
+
+```bash
+# Test orchestrator agent card
+curl http://localhost:9000/.well-known/agent-card.json | jq
+
+# Test vision agent directly
+curl -X POST http://localhost:9001 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "task",
+    "params": {
+      "task": "Test message",
+      "user_id": "test",
+      "session_id": "test"
+    },
+    "id": 1
+  }' | jq
+```
+
+#### Memory Debugging
+
+```bash
+# Check memory status
+python scripts/manage_memory.py status
+
+# Query specific session
+python scripts/manage_memory.py query-session \
+  --actor-id "user@example.com" \
+  --session-id "session-uuid"
+
+# List all namespaces
+python scripts/manage_memory.py list-namespaces \
+  --actor-id "user@example.com"
+
+# Debug memory records
+python scripts/manage_memory.py debug-memory \
+  --actor-id "user@example.com"
+```
+
+### Log Analysis
+
+#### Common Log Patterns
+
+**Successful A2A Call**:
+```
+INFO: A2A call - source_agent=orchestrator target_agent=vision latency_ms=1234.56 success=True
+```
+
+**Memory Storage**:
+```
+INFO: Storing interaction - user_id=user@example.com session_id=uuid agent_name=vision
+```
+
+**Authentication**:
+```
+INFO: User authenticated - email=user@example.com
+```
+
+#### Error Patterns
+
+**A2A Communication Error**:
+```
+ERROR: A2A call failed - target_agent=vision error=Connection refused
+```
+
+**Memory Error**:
+```
+ERROR: Memory operation failed - operation=create_event error=AccessDenied
+```
+
+**Authentication Error**:
+```
+ERROR: JWT verification failed - error=Invalid token
+```
+
+---
+
+## Contributing
+
+### Development Workflow
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/new-feature`
+3. Make changes and add tests
+4. Run tests: `pytest`
+5. Commit changes: `git commit -m "Add new feature"`
+6. Push to branch: `git push origin feature/new-feature`
+7. Create pull request
+
+### Code Style
+
+- Follow PEP 8 for Python code
+- Use type hints where possible
+- Add docstrings to all functions and classes
+- Keep functions focused and small
+
+### Testing Requirements
+
+- All new features must include tests
+- Maintain or improve test coverage
+- Integration tests for new agents or tools
+- Update documentation for API changes
+
+### Documentation
+
+- Update README for user-facing changes
+- Add docstrings to new code
+- Update architecture diagrams if structure changes
+- Document new environment variables
+
+---
+
+## Additional Resources
+
+### Documentation
+
+- [Bi-Directional Architecture](./docs/BIDI_ARCHITECTURE.md) - Voice agent architecture details
+- [Quick Start Guide](./docs/QUICKSTART.md) - Detailed setup instructions
+- [Docker Compose Guide](./docs/DOCKER_COMPOSE.md) - Local development setup
+- [A2A Migration Guide](./docs/agentcore_a2a_migration_guide__strands___cdk_.md) - A2A protocol details
+- [CDK Infrastructure](./infrastructure/cdk/README.md) - Deployment guide
+- [Testing Guide](./tests/README.md) - Test documentation
+
+### External Resources
+
+- [Strands Framework Documentation](https://strandsagents.com/)
+- [A2A Protocol Specification](https://a2a-protocol.org/)
+- [AgentCore Runtime Documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/agentcore-runtime.html)
+- [Amazon Bedrock Documentation](https://docs.aws.amazon.com/bedrock/)
+- [AgentCore Memory Documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/agentcore-memory.html)
+
+### Support
+
+For issues or questions:
+- Check logs: `docker-compose logs -f`
+- Review troubleshooting section
+- Check existing documentation
+- Open an issue on GitHub
+
+---
+
+## License
 
 Apache 2.0
