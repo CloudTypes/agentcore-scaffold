@@ -204,39 +204,191 @@ graph TB
 
 ### Environment Configuration
 
-Create a `.env` file in the project root:
+Create a `.env` file in the project root. You can copy `env-example.txt` as a starting point:
 
 ```bash
-# AWS Configuration
-AWS_REGION=us-west-2
-AWS_PROFILE=default  # Optional: for named profiles
-AGENTCORE_MEMORY_REGION=us-west-2
+cp env-example.txt .env
+```
 
-# AgentCore Memory (optional - leave empty to disable)
+#### AWS Credentials for Local Development
+
+**IMPORTANT**: If your AWS account requires MFA (Multi-Factor Authentication), you must generate temporary credentials using `fix_mfa.py` for each local development session. These credentials are valid for 12 hours and are required for all AWS API calls (Bedrock, AgentCore Memory, etc.) during local development.
+
+1. **Run the MFA script** (will prompt for MFA code once):
+   ```bash
+   python scripts/fix_mfa.py
+   ```
+
+2. **Copy the export commands** from the script output and update your `.env` file with the generated credentials:
+   ```bash
+   AWS_ACCESS_KEY_ID=<from script output>
+   AWS_SECRET_ACCESS_KEY=<from script output>
+   AWS_SESSION_TOKEN=<from script output>
+   AWS_DEFAULT_REGION=<from script output>
+   AWS_ACCOUNT_ID=<from script output>
+   # Comment out AWS_PROFILE when using session tokens
+   # AWS_PROFILE=
+   ```
+
+3. **Note**: These credentials expire after 12 hours. When they expire, re-run `python scripts/fix_mfa.py` and update your `.env` file with the new credentials.
+
+**Why this is needed**: Docker Compose containers run in non-interactive mode and cannot handle interactive MFA prompts. The `fix_mfa.py` script generates temporary session credentials that bypass MFA prompts and allow all AWS SDK calls (boto3) to work seamlessly.
+
+Then edit `.env` with your configuration. Here's a complete example with all available options:
+
+```bash
+# =============================================================================
+# AWS Configuration
+# =============================================================================
+# Used by: docker-compose.yml, boto3 clients throughout codebase
+# IMPORTANT: If using MFA, run 'python scripts/fix_mfa.py' and update these
+# credentials for each local development session (valid for 12 hours)
+AWS_REGION=us-west-2
+AWS_PROFILE=default  # Optional: for named profiles (comment out when using session tokens)
+AWS_ACCESS_KEY_ID=  # Required: from fix_mfa.py output if using MFA
+AWS_SECRET_ACCESS_KEY=  # Required: from fix_mfa.py output if using MFA
+AWS_SESSION_TOKEN=  # Required: from fix_mfa.py output if using MFA (temporary credentials)
+AWS_DEFAULT_REGION=us-west-2
+AWS_ACCOUNT_ID=  # Optional: used by scripts/fix_mfa.py, also from fix_mfa.py output
+
+# =============================================================================
+# Model Configuration
+# =============================================================================
+# Used by: agents/orchestrator/agent.py
+ORCHESTRATOR_MODEL=us.amazon.nova-pro-v1:0
+
+# Used by: agents/vision/agent.py
+VISION_MODEL=us.amazon.nova-pro-v1:0
+
+# Used by: agents/document/agent.py
+DOCUMENT_MODEL=us.amazon.nova-pro-v1:0
+
+# Used by: agents/data/agent.py
+DATA_MODEL=us.amazon.nova-lite-v1:0
+
+# Used by: agents/tool/agent.py
+TOOL_MODEL=us.amazon.nova-lite-v1:0
+
+# Used by: src/agent.py, agents/voice/app.py
+MODEL_ID=amazon.nova-2-sonic-v1:0
+
+# =============================================================================
+# Voice Agent Configuration
+# =============================================================================
+# Used by: src/agent.py, agents/voice/app.py
+VOICE=matthew
+INPUT_SAMPLE_RATE=16000
+OUTPUT_SAMPLE_RATE=24000
+SYSTEM_PROMPT=You are a helpful voice assistant with access to calculator, weather, and database tools.
+
+# =============================================================================
+# AgentCore Memory Configuration
+# =============================================================================
+# Note: AgentCore Memory uses AWS SDK, not HTTP endpoint or API key
+# It uses AWS credentials (AWS_PROFILE or IAM role)
+#
+# Used by: src/agent.py, agents/voice/app.py, agents/orchestrator/app.py
+MEMORY_ENABLED=true
+
+# Used by: src/memory/client.py, docker-compose.yml
 AGENTCORE_MEMORY_ID=your-memory-id-here
 
-# Model Configuration (optional - defaults shown)
-ORCHESTRATOR_MODEL=us.amazon.nova-pro-v1:0
-VISION_MODEL=us.amazon.nova-pro-v1:0
-DOCUMENT_MODEL=us.amazon.nova-pro-v1:0
-DATA_MODEL=us.amazon.nova-lite-v1:0
-TOOL_MODEL=us.amazon.nova-lite-v1:0
-MODEL_ID=amazon.nova-2-sonic-v1:0  # Voice agent
+# Used by: scripts/manage_memory.py
+AGENTCORE_MEMORY_ARN=  # Optional: full ARN of memory resource
 
-# Google OAuth2 (optional - for authentication)
+# Used by: src/memory/client.py, docker-compose.yml, infrastructure/cdk/app.py
+AGENTCORE_MEMORY_REGION=us-west-2
+
+# Used by: src/memory/session_manager.py
+PAST_SESSIONS_COUNT=3  # Number of past sessions to load for context
+
+# =============================================================================
+# Agent Authentication (A2A Protocol)
+# =============================================================================
+# Used by: agents/shared/auth.py
+# Note: All agents (orchestrator, vision, document, data, tool) must use the same value
+# Generate using:
+#   openssl rand -hex 32
+AGENT_AUTH_SECRET=your-generated-secret-key
+
+# =============================================================================
+# Google OAuth2 Configuration
+# =============================================================================
+# Used by: src/auth/google_oauth2.py
+# Optional: for user authentication
 GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=your-client-secret
 GOOGLE_REDIRECT_URI=http://localhost:9000/api/auth/callback
-GOOGLE_WORKSPACE_DOMAIN=  # Optional: restrict to domain
+GOOGLE_WORKSPACE_DOMAIN=  # Optional: restrict to specific domain
 
-# JWT Configuration (optional)
+# =============================================================================
+# Client JWT Configuration
+# =============================================================================
+# Used by: src/auth/google_oauth2.py
+# Generate using:
+#   openssl rand -hex 32
+# Note: Must be at least 32 characters long for security
 JWT_SECRET_KEY=your-generated-secret-key
 JWT_ALGORITHM=HS256
 JWT_EXPIRATION_MINUTES=60
 
-# Tool Configuration (optional)
-WEATHER_API_KEY=your-weather-api-key  # For weather tool
+# =============================================================================
+# External APIs
+# =============================================================================
+# Used by: agents/tool/tools/weather.py
+WEATHER_API_KEY=your-weather-api-key  # Optional: for weather tool
+
+# =============================================================================
+# Testing Configuration
+# =============================================================================
+# Used by: tests/integration/test_a2a_communication.py, tests/integration/test_multi_agent.py
+# JWT token for integration tests to authenticate with orchestrator endpoints
+# 
+# To generate TEST_AUTH_TOKEN (choose one method):
+#
+# Method 1 - Via OAuth2 (recommended for production-like testing):
+#   1. Start the orchestrator: docker-compose up orchestrator
+#   2. Authenticate via OAuth2: curl http://localhost:9000/api/auth/login
+#   3. Complete OAuth2 flow and extract the JWT token from the redirect URL
+# 
+# Method 2 - Generate programmatically using JWT_SECRET_KEY:
+#   export JWT_SECRET_KEY=$(openssl rand -hex 32)
+#   python3 -c "import jwt; import os; from datetime import datetime, timedelta; \
+#     secret = os.getenv('JWT_SECRET_KEY'); \
+#     token = jwt.encode({'sub': 'test-user', 'email': 'test@example.com', \
+#     'exp': datetime.utcnow() + timedelta(hours=1), 'iat': datetime.utcnow()}, \
+#     secret, algorithm='HS256'); print(token)"
+#
+# Method 3 - Simple test token (only for local development):
+#   python3 -c "import jwt; from datetime import datetime, timedelta; \
+#     token = jwt.encode({'sub': 'test-user', 'email': 'test@example.com', \
+#     'exp': datetime.utcnow() + timedelta(hours=1), 'iat': datetime.utcnow()}, \
+#     'test-secret-key-for-testing-only', algorithm='HS256'); print(token)"
+TEST_AUTH_TOKEN=  # Optional: only needed for integration tests
+
+# =============================================================================
+# Advanced Configuration (Optional - defaults provided in code)
+# =============================================================================
+# Used by: agents/shared/service_discovery.py, docker-compose.yml
+ENVIRONMENT=development
+
+# Used by: agents/orchestrator/app.py, src/routes/vision.py
+S3_VISION_BUCKET=agentcore-vision-uploads
+S3_UPLOAD_PREFIX=uploads/
+VISION_PRESIGNED_URL_EXPIRY=3600
+
+# Used by: agents/orchestrator/app.py
+A2A_PORT=9001
+ORCHESTRATOR_HTTP_PORT=9000
+
+# Used by: src/routes/vision.py
+ORCHESTRATOR_BASE=http://localhost:9000
+
+# Used by: agents/vision/agent.py
+BEDROCK_MAX_TOKENS=4096
 ```
+
+**Note**: See `env-example.txt` for a template with all available environment variables and their file references.
 
 ### Local Setup with Docker Compose
 
@@ -1145,6 +1297,7 @@ The A2A protocol uses JSON-RPC 2.0 over HTTP:
    ```bash
    aws sts get-caller-identity
    ```
+   **Note**: If using MFA, ensure you've run `python scripts/fix_mfa.py` and updated your `.env` file with the generated credentials (valid for 12 hours).
 
 2. Verify Docker is running:
    ```bash
@@ -1156,7 +1309,7 @@ The A2A protocol uses JSON-RPC 2.0 over HTTP:
    docker-compose logs orchestrator
    ```
 
-4. Verify environment variables in `.env` file
+4. Verify environment variables in `.env` file, especially AWS credentials if using MFA
 
 #### A2A Communication Fails
 

@@ -55,7 +55,7 @@ If your AWS credentials require MFA (Multi-Factor Authentication), Docker contai
    # AWS_PROFILE=
    ```
 
-3. **Note**: These credentials expire after ~1 hour. When they expire, re-run `python scripts/fix_mfa.py` and update your `.env` file.
+3. **Note**: These credentials expire after 12 hours. When they expire, re-run `python scripts/fix_mfa.py` and update your `.env` file with the new credentials.
 
 **Why this is needed**: Docker Compose uses `AWS_PROFILE` which requires interactive MFA prompts, but containers run in non-interactive mode. The `fix_mfa.py` script generates temporary session credentials that bypass MFA prompts.
 
