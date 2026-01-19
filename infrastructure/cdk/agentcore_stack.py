@@ -19,20 +19,28 @@ class AgentCoreStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        # ECR Repository for Docker images
-        ecr_repo = ecr.Repository(
-            self,
-            "VoiceAgentECRRepo",
-            repository_name="agentcore-voice-agent",
-            image_scan_on_push=True,
-            lifecycle_rules=[
-                ecr.LifecycleRule(
-                    rule_priority=1,
-                    description="Keep last 10 images",
-                    max_image_count=10
-                )
-            ]
-        )
+        # ECR Repositories for Docker images (separate repo per agent)
+        agents = ["orchestrator", "vision", "document", "data", "tool", "voice"]
+        ecr_repos = {}
+        
+        for agent_name in agents:
+            repo = ecr.Repository(
+                self,
+                f"{agent_name.capitalize()}ECRRepo",
+                repository_name=f"agentcore-voice-agent-{agent_name}",
+                image_scan_on_push=True,
+                lifecycle_rules=[
+                    ecr.LifecycleRule(
+                        rule_priority=1,
+                        description="Keep last 10 images",
+                        max_image_count=10
+                    )
+                ]
+            )
+            ecr_repos[agent_name] = repo
+        
+        # Keep legacy single repo for backward compatibility (deprecated)
+        ecr_repo = ecr_repos.get("voice", None)  # Use voice as default for legacy compatibility
 
         # IAM Role for AgentCore Runtime
         agentcore_role = iam.Role(
@@ -183,28 +191,53 @@ class AgentCoreStack(Stack):
         )
 
         # SSM Parameters for non-sensitive configuration
+        env_name = self.node.try_get_context("environment") or "dev"
+        
         ssm.StringParameter(
             self,
             "MemoryRegionParam",
-            parameter_name="/agentcore/voice-agent/memory-region",
+            parameter_name=f"/agentcore/voice-agent/{env_name}/memory-region",
             string_value=self.region,
             description="AWS region for AgentCore Memory"
         )
+        
+        # Create image tag parameters with default values (updated by CodeBuild)
+        agents = ["orchestrator", "vision", "document", "data", "tool", "voice"]
+        for agent_name in agents:
+            ssm.StringParameter(
+                self,
+                f"{agent_name.capitalize()}ImageTagParam",
+                parameter_name=f"/agentcore/voice-agent/{env_name}/{agent_name}-image-tag",
+                string_value="latest",  # Default, updated by CodeBuild
+                description=f"Image tag for {agent_name} agent (updated by CodeBuild)"
+            )
 
         # Store references for use by other stacks
-        self.ecr_repo = ecr_repo
+        self.ecr_repo = ecr_repo  # Legacy compatibility
+        self.ecr_repos = ecr_repos  # New: separate repos per agent
         self.agentcore_role = agentcore_role
         self.memory_id_secret = memory_id_secret
         self.agent_auth_secret = agent_auth_secret
 
-        # Outputs
-        CfnOutput(
-            self,
-            "ECRRepositoryURI",
-            value=ecr_repo.repository_uri,
-            description="ECR repository URI for Docker images",
-            export_name=f"{self.stack_name}-ECRRepositoryURI"
-        )
+        # Outputs - Legacy (deprecated)
+        if ecr_repo:
+            CfnOutput(
+                self,
+                "ECRRepositoryURI",
+                value=ecr_repo.repository_uri,
+                description="ECR repository URI for Docker images (legacy, deprecated)",
+                export_name=f"{self.stack_name}-ECRRepositoryURI"
+            )
+        
+        # Outputs - Individual ECR repositories
+        for agent_name, repo in ecr_repos.items():
+            CfnOutput(
+                self,
+                f"{agent_name.capitalize()}ECRRepositoryURI",
+                value=repo.repository_uri,
+                description=f"ECR repository URI for {agent_name} agent",
+                export_name=f"{self.stack_name}-{agent_name.capitalize()}ECRRepositoryURI"
+            )
 
         CfnOutput(
             self,

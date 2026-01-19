@@ -1,0 +1,36 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO_URI
+      - COMMIT_SHA=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - BRANCH_NAME=$(echo $CODEBUILD_WEBHOOK_HEAD_REF | sed 's/refs\/heads\///' || echo "main")
+      - IMAGE_TAG="${BRANCH_NAME}-${COMMIT_SHA}"
+      - echo Building Docker image with tag $IMAGE_TAG
+      - echo "IMAGE_TAG=${IMAGE_TAG}" > /tmp/build.env
+  build:
+    commands:
+      - echo Build started on `date`
+      - echo Building the Docker image...
+      - docker build -t $ECR_REPO_URI:$IMAGE_TAG -f agents/tool/Dockerfile .
+      - docker tag $ECR_REPO_URI:$IMAGE_TAG $ECR_REPO_URI:latest
+  post_build:
+    commands:
+      - echo Build completed on `date`
+      - echo Pushing the Docker images...
+      - docker push $ECR_REPO_URI:$IMAGE_TAG
+      - docker push $ECR_REPO_URI:latest
+      - echo Updating SSM parameter with new image tag...
+      - aws ssm put-parameter \
+          --name "/agentcore/voice-agent/${ENVIRONMENT}/tool-image-tag" \
+          --value "$IMAGE_TAG" \
+          --type "String" \
+          --overwrite \
+          --region $AWS_REGION
+      - echo Image tag updated: $IMAGE_TAG
+
+artifacts:
+  files:
+    - /tmp/build.env

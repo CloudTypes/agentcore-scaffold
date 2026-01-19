@@ -39,6 +39,10 @@ AgentCore Voice Agent is a comprehensive multi-agent system that provides:
 - ✅ **Tool Integration**: Calculator, weather API, database queries
 - ✅ **Docker Compose**: Local development environment
 - ✅ **AWS CDK**: Infrastructure as code for production deployment
+- ✅ **CodeBuild Pipelines**: Automated CI/CD with GitHub integration
+- ✅ **Separate ECR Repositories**: Independent versioning per agent
+- ✅ **S3 + CloudFront**: Web client deployment
+- ✅ **Automated Deployments**: No manual commands required
 
 ### Architecture at a Glance
 
@@ -56,9 +60,27 @@ Both systems share AgentCore Memory for persistent context and user preferences.
 - **Models**: Amazon Nova (Pro, Lite, Canvas, Sonic)
 - **Memory**: AgentCore Memory (AWS Bedrock)
 - **Backend**: FastAPI, Uvicorn
-- **Frontend**: Vanilla JavaScript, Web Audio API
-- **Infrastructure**: Docker Compose, AWS CDK
+- **Frontend**: Vanilla JavaScript, Web Audio API (will support React)
+- **Infrastructure**: Docker Compose (local), AWS CDK + CodeBuild (production)
+- **CI/CD**: CodeBuild pipelines with GitHub webhooks
+- **Container Registry**: AWS ECR (separate repos per agent)
+- **Web Hosting**: S3 + CloudFront
 - **Authentication**: Google OAuth2, JWT tokens
+- **Configuration**: SSM Parameter Store + Secrets Manager (production)
+
+### Production Infrastructure
+
+The production deployment uses a fully automated CI/CD pipeline:
+
+- **CodeBuild Pipelines**: Automated Docker builds triggered by GitHub pushes
+- **ECR Repositories**: Separate repository per agent for independent versioning
+- **AgentCore Runtime**: Managed container runtime for all agents
+- **S3 + CloudFront**: Web client hosting with global CDN
+- **SSM Parameter Store**: Non-sensitive configuration management
+- **Secrets Manager**: Secure storage for OAuth, JWT, and API keys
+- **Automated Deployments**: No manual commands required
+
+See [docs/INFRASTRUCTURE.md](./docs/INFRASTRUCTURE.md) for detailed architecture.
 
 ---
 
@@ -194,21 +216,25 @@ graph TB
 
 ## Quick Start
 
+> **Note**: This section covers **local development only**. For production deployment, see [Deployment](#deployment) section and [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md).
+
 ### Prerequisites
 
 - **Python**: 3.10+ (3.11 for multi-agent system, 3.12 for voice agent)
 - **Docker**: Docker and Docker Compose installed
-- **AWS Account**: With Bedrock access configured
+- **AWS Account**: With Bedrock access configured (for local development)
 - **AWS CLI**: Configured with credentials
 - **PortAudio**: Required for voice agent (macOS: `brew install portaudio`)
 
 ### Environment Configuration
 
-Create a `.env` file in the project root. You can copy `env-example.txt` as a starting point:
+Create a `.env` file in the project root. You can copy `env.example` as a starting point:
 
 ```bash
-cp env-example.txt .env
+cp env.example .env
 ```
+
+> **Note**: The `.env` file is for **local development only**. In production, environment variables are managed via SSM Parameter Store and Secrets Manager. See [docs/ENVIRONMENT_VARIABLES.md](./docs/ENVIRONMENT_VARIABLES.md) for details.
 
 #### AWS Credentials for Local Development
 
@@ -705,6 +731,12 @@ graph TB
 
 ```mermaid
 graph TB
+    subgraph "CI/CD Pipeline"
+        GitHub[GitHub Repository]
+        CodeBuild[CodeBuild Projects<br/>6 agents + web client]
+        ECR[ECR Repositories<br/>Separate repo per agent]
+    end
+    
     subgraph "AWS Account"
         subgraph "AgentCore Runtime"
             OrchestratorRT[Orchestrator Runtime]
@@ -715,10 +747,14 @@ graph TB
             VoiceRT[Voice Runtime]
         end
         
+        subgraph "Web Client"
+            S3[S3 Bucket<br/>Static Files]
+            CloudFront[CloudFront<br/>CDN Distribution]
+        end
+        
         subgraph "Storage & Configuration"
-            ECR[ECR Repositories<br/>Container Images]
-            Secrets[Secrets Manager<br/>OAuth/JWT Secrets]
-            SSM[SSM Parameter Store<br/>Memory ID]
+            Secrets[Secrets Manager<br/>OAuth/JWT/API Keys]
+            SSM[SSM Parameter Store<br/>Config & Image Tags]
             CloudWatch[CloudWatch Logs<br/>Application Logs]
         end
         
@@ -727,6 +763,27 @@ graph TB
             Memory[AgentCore Memory<br/>Session/Preferences]
         end
     end
+    
+    GitHub -->|Webhook| CodeBuild
+    CodeBuild -->|Build & Push| ECR
+    CodeBuild -->|Update Tags| SSM
+    CodeBuild -->|Deploy| OrchestratorRT
+    CodeBuild -->|Deploy| VisionRT
+    CodeBuild -->|Deploy| DocumentRT
+    CodeBuild -->|Deploy| DataRT
+    CodeBuild -->|Deploy| ToolRT
+    CodeBuild -->|Deploy| VoiceRT
+    CodeBuild -->|Upload| S3
+    
+    ECR --> OrchestratorRT
+    ECR --> VisionRT
+    ECR --> DocumentRT
+    ECR --> DataRT
+    ECR --> ToolRT
+    ECR --> VoiceRT
+    
+    S3 --> CloudFront
+    CloudFront -->|HTTPS| Users[Users]
     
     OrchestratorRT --> Bedrock
     VisionRT --> Bedrock
@@ -749,19 +806,43 @@ graph TB
     ToolRT --> Secrets
     VoiceRT --> Secrets
     
+    OrchestratorRT --> SSM
+    VisionRT --> SSM
+    DocumentRT --> SSM
+    DataRT --> SSM
+    ToolRT --> SSM
+    VoiceRT --> SSM
+    
     OrchestratorRT --> CloudWatch
     VisionRT --> CloudWatch
     DocumentRT --> CloudWatch
     DataRT --> CloudWatch
     ToolRT --> CloudWatch
     VoiceRT --> CloudWatch
+```
+
+### CI/CD Pipeline Flow
+
+```mermaid
+sequenceDiagram
+    participant Dev as Developer
+    participant GitHub as GitHub
+    participant CodeBuild as CodeBuild
+    participant ECR as ECR Repository
+    participant SSM as SSM Parameter Store
+    participant CDK as CDK Stack
+    participant Runtime as AgentCore Runtime
+    participant Health as Health Check
     
-    ECR --> OrchestratorRT
-    ECR --> VisionRT
-    ECR --> DocumentRT
-    ECR --> DataRT
-    ECR --> ToolRT
-    ECR --> VoiceRT
+    Dev->>GitHub: Push code to branch
+    GitHub->>CodeBuild: Webhook trigger
+    CodeBuild->>CodeBuild: Build Docker image
+    CodeBuild->>ECR: Push image (tagged)
+    CodeBuild->>SSM: Update image tag
+    CodeBuild->>CDK: Deploy stack (if needed)
+    CDK->>Runtime: Update runtime with new image
+    Runtime->>Health: Health check
+    Health->>Dev: SNS notification
 ```
 
 ### Memory Strategies
@@ -834,10 +915,24 @@ agentcore-voice-agent/
 ├── infrastructure/           # AWS CDK infrastructure
 │   └── cdk/
 │       ├── app.py            # CDK app entry point
-│       ├── agentcore_stack.py
-│       ├── agentcore_runtime_stack.py
-│       ├── multi_agent_stack.py
-│       └── vision_stack.py
+│       ├── agentcore_stack.py        # Base infrastructure (ECR, IAM, Secrets)
+│       ├── agentcore_runtime_stack.py # Voice agent runtime
+│       ├── multi_agent_stack.py      # Multi-agent system
+│       ├── vision_stack.py           # Vision infrastructure
+│       ├── codebuild_stack.py        # CodeBuild pipelines
+│       ├── web_client_stack.py       # Web client (S3 + CloudFront)
+│       └── deployment_stack.py      # Deployment orchestration
+├── buildspecs/               # CodeBuild build specifications
+│   ├── buildspec-orchestrator.yml
+│   ├── buildspec-vision.yml
+│   ├── buildspec-document.yml
+│   ├── buildspec-data.yml
+│   ├── buildspec-tool.yml
+│   ├── buildspec-voice.yml
+│   └── buildspec-web-client.yml
+├── .github/                  # GitHub Actions workflows
+│   └── workflows/
+│       └── ci.yml            # CI pipeline for PRs
 ├── tests/                     # Test suite
 │   ├── unit/                 # Unit tests
 │   └── integration/          # Integration tests
@@ -992,111 +1087,98 @@ pytest tests/integration/test_a2a_communication.py
 
 ## Deployment
 
+### Overview
+
+Production deployments are **fully automated** via CodeBuild pipelines triggered by GitHub pushes. No manual `agentcore configure` or `agentcore launch` commands are required.
+
+**For detailed deployment instructions, see [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md)**
+
 ### Prerequisites
 
 - AWS Account with Bedrock access
 - AWS CLI configured
-- Docker installed
 - CDK CLI installed: `npm install -g aws-cdk`
+- GitHub repository with webhook access
+- Python 3.11+ for CDK stacks
 
-### AWS CDK Deployment
+### Automated CI/CD Deployment
 
-1. **Install CDK dependencies**:
-   ```bash
-   cd infrastructure/cdk
-   pip install -r requirements.txt
-   ```
+The system uses CodeBuild pipelines for automated deployments:
 
-2. **Bootstrap CDK** (first time only):
-   ```bash
-   cdk bootstrap aws://ACCOUNT-ID/us-west-2
-   ```
+1. **Push to GitHub**: Code changes pushed to `main` (production) or `develop` (dev) branch
+2. **CodeBuild Triggered**: GitHub webhook triggers CodeBuild project
+3. **Build Docker Image**: Agent-specific image built and tagged with `{branch}-{commit-sha}`
+4. **Push to ECR**: Image pushed to agent-specific ECR repository
+5. **Update SSM**: Image tag stored in SSM Parameter Store
+6. **Deploy CDK**: Infrastructure updated if needed
+7. **Update Runtime**: AgentCore Runtime updated with new image
+8. **Health Check**: Automated verification
 
-3. **Create AgentCore Memory**:
-   ```bash
-   # From project root
-   python scripts/manage_memory.py create
-   ```
+### Initial Infrastructure Setup
 
-4. **Build and push Docker images**:
-   ```bash
-   # Build images
-   docker buildx build --platform linux/arm64 -t orchestrator:latest -f agents/orchestrator/Dockerfile .
-   docker buildx build --platform linux/arm64 -t vision:latest -f agents/vision/Dockerfile .
-   # ... repeat for other agents
-   
-   # Tag and push to ECR
-   ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-   REGION=us-west-2
-   
-   aws ecr get-login-password --region $REGION | \
-     docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
-   
-   docker tag orchestrator:latest $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/orchestrator:latest
-   docker push $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/orchestrator:latest
-   # ... repeat for other agents
-   ```
+See [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) for complete initial setup instructions, including:
 
-5. **Deploy CDK stacks**:
-   ```bash
-   cd infrastructure/cdk
-   cdk deploy --all
-   ```
+- CDK bootstrap
+- Base infrastructure deployment
+- ECR repository creation (separate repos per agent)
+- Secrets Manager configuration
+- SSM Parameter Store setup
+- CodeBuild pipeline deployment
+- GitHub webhook configuration
 
-### Secrets Configuration
+### Infrastructure Components
 
-After deployment, configure secrets in AWS Secrets Manager:
+#### ECR Repository Structure
 
-#### Google OAuth2 Credentials
+Each agent has its own ECR repository for independent versioning:
 
-```bash
-aws secretsmanager put-secret-value \
-  --secret-id agentcore/voice-agent/google-oauth2 \
-  --secret-string '{
-    "client_id": "your-client-id.apps.googleusercontent.com",
-    "client_secret": "your-client-secret",
-    "redirect_uri": "https://your-endpoint/api/auth/callback"
-  }'
-```
+- `agentcore-voice-agent-orchestrator`
+- `agentcore-voice-agent-vision`
+- `agentcore-voice-agent-document`
+- `agentcore-voice-agent-data`
+- `agentcore-voice-agent-tool`
+- `agentcore-voice-agent-voice`
 
-#### JWT Secret
+#### CodeBuild Pipelines
 
-```bash
-JWT_SECRET=$(openssl rand -hex 32)
-aws secretsmanager put-secret-value \
-  --secret-id agentcore/voice-agent/jwt-secret \
-  --secret-string "{\"secret_key\": \"$JWT_SECRET\"}"
-```
+Automated build projects for each component:
+- One CodeBuild project per agent (6 total)
+- One CodeBuild project for web client
+- GitHub webhook integration
+- Branch-based deployments (main → prod, develop → dev)
 
-#### Agent Auth Secret (for A2A)
+#### Web Client Deployment
 
-```bash
-AGENT_AUTH_SECRET=$(openssl rand -hex 32)
-aws secretsmanager put-secret-value \
-  --secret-id agentcore/voice-agent/agent-auth-secret \
-  --secret-string "{\"secret_key\": \"$AGENT_AUTH_SECRET\"}"
-```
+- **S3 Bucket**: Hosts static web client files
+- **CloudFront Distribution**: CDN for global delivery
+- **Runtime Configuration**: API endpoints injected via `config.js`
+- **Automatic Invalidation**: Cache cleared on deployment
 
-### Updating Individual Agents
+#### Environment Configuration
 
-To update only one agent:
+Production uses:
+- **SSM Parameter Store**: Non-sensitive configuration (model IDs, endpoints, etc.)
+- **Secrets Manager**: Sensitive values (OAuth, JWT, API keys)
+- **IAM Roles**: No access keys in production
 
-```bash
-# Build and push new image
-docker buildx build --platform linux/arm64 -t vision:latest -f agents/vision/Dockerfile .
-docker tag vision:latest $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/vision:latest
-docker push $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/vision:latest
+See [docs/ENVIRONMENT_VARIABLES.md](./docs/ENVIRONMENT_VARIABLES.md) for complete variable reference.
 
-# Deploy updated stack
-cd infrastructure/cdk
-cdk deploy VisionStack
-```
+### Manual Deployment (If Needed)
+
+If automated deployment is not available, see [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) for manual deployment procedures.
 
 ### Monitoring
 
-- **CloudWatch Logs**: Application logs for each agent
-- **CloudWatch Metrics**: Performance and error metrics
+- **CloudWatch Logs**: Application logs for each agent (`/aws/agentcore/voice-agent`)
+- **CloudWatch Metrics**: Build success rates, deployment duration
+- **CodeBuild Logs**: Detailed build and deployment logs
+- **SNS Notifications**: Deployment success/failure notifications
+- **Health Checks**: Automated post-deployment verification
 - **AgentCore Runtime**: Built-in observability dashboard
+
+### Rollback Procedures
+
+See [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) for detailed rollback procedures.
 
 ---
 
@@ -1288,9 +1370,40 @@ The A2A protocol uses JSON-RPC 2.0 over HTTP:
 
 ### Common Issues
 
+#### CodeBuild Pipeline Issues
+
+**Symptoms**: Builds fail or don't trigger
+
+**Solutions**:
+1. **Check GitHub Webhook**: Verify webhook is configured and pointing to CodeBuild
+2. **Verify IAM Permissions**: Ensure CodeBuild role has ECR push permissions
+3. **Check Build Logs**: Review CodeBuild console for detailed error messages
+4. **Verify Environment Variables**: Check CodeBuild project environment variables (GITHUB_OWNER, GITHUB_REPO)
+5. **ECR Authentication**: Ensure CodeBuild can authenticate to ECR repositories
+
+#### ECR Push Failures
+
+**Symptoms**: Docker images fail to push to ECR
+
+**Solutions**:
+1. **Authentication**: Verify ECR login succeeded in build logs
+2. **Permissions**: Check CodeBuild role has `ecr:BatchGetImage` and `ecr:PutImage` permissions
+3. **Repository Exists**: Verify ECR repository was created in base stack
+4. **Image Tag Format**: Ensure image tags follow `{branch}-{commit-sha}` format
+
+#### CDK Deployment Issues
+
+**Symptoms**: CDK stack deployment fails
+
+**Solutions**:
+1. **Stack Dependencies**: Ensure base stack is deployed before dependent stacks
+2. **SSM Parameters**: Verify all required SSM parameters exist (check buildspec for parameter names)
+3. **CloudFormation Events**: Review stack events in CloudFormation console for specific errors
+4. **Image Tags**: Ensure image tags in SSM match images in ECR
+
 #### Agents Won't Start
 
-**Symptoms**: Docker containers fail to start or exit immediately
+**Symptoms**: Docker containers fail to start or exit immediately (local development)
 
 **Solutions**:
 1. Check AWS credentials:
@@ -1364,19 +1477,58 @@ The A2A protocol uses JSON-RPC 2.0 over HTTP:
 4. Verify WebSocket connection is established
 5. Check sample rate configuration (16kHz input, 24kHz output)
 
+#### Environment Variable Resolution
+
+**Symptoms**: SSM parameter not found, secrets access denied
+
+**Solutions**:
+1. **SSM Parameter Missing**: Create parameter:
+   ```bash
+   aws ssm put-parameter \
+     --name "/agentcore/voice-agent/{env}/parameter-name" \
+     --value "value" \
+     --type "String"
+   ```
+
+2. **Secrets Access Denied**: Verify IAM role has `secretsmanager:GetSecretValue` permission
+
+3. **Wrong Environment**: Check `ENVIRONMENT` context matches SSM path (`dev` vs `prod`)
+
+4. **Local Development**: Ensure `.env` file exists and has required variables
+
+#### Web Client Deployment Issues
+
+**Symptoms**: CloudFront cache issues, S3 upload failures
+
+**Solutions**:
+1. **S3 Upload Failure**: Check CodeBuild role has `s3:PutObject` permission
+2. **CloudFront Invalidation**: Verify distribution ID is correct in CodeBuild environment variables
+3. **Cache Not Clearing**: Wait for invalidation to complete (usually 1-2 minutes)
+4. **Config.js Missing**: Verify SSM parameters for API endpoints exist
+
+#### Agent Deployment Issues
+
+**Symptoms**: AgentCore Runtime update failures, health check issues
+
+**Solutions**:
+1. **Image Not Found**: Verify image exists in ECR with specified tag
+2. **Runtime Status**: Check runtime is in active state before update
+3. **Health Check Endpoint**: Verify `/ping` or `/.well-known/agent-card.json` endpoints respond
+4. **Runtime Logs**: Review CloudWatch logs for runtime errors
+
 #### Authentication Errors
 
 **Symptoms**: OAuth2 login fails, JWT verification errors
 
 **Solutions**:
 1. Verify Google OAuth2 credentials:
-   - Check `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`
+   - **Local**: Check `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.env`
+   - **Production**: Verify secret in Secrets Manager: `agentcore/voice-agent/{env}/google-oauth2`
    - Verify redirect URI matches Google Cloud Console
 
 2. Check JWT secret:
-   ```bash
-   echo $JWT_SECRET_KEY
-   ```
+   - **Local**: `echo $JWT_SECRET_KEY`
+   - **Production**: Verify secret in Secrets Manager: `agentcore/voice-agent/{env}/jwt-secret`
 
 3. Verify token expiration:
    - Default: 60 minutes
@@ -1525,11 +1677,15 @@ ERROR: JWT verification failed - error=Invalid token
 
 ### Documentation
 
+- [Deployment Guide](./docs/DEPLOYMENT.md) - **Production deployment instructions**
+- [Environment Variables](./docs/ENVIRONMENT_VARIABLES.md) - **Complete variable reference**
+- [Infrastructure Architecture](./docs/INFRASTRUCTURE.md) - **Infrastructure details**
+- [Template Update Guide](./docs/UPDATE_GUIDE.md) - **How to pull upstream template updates**
 - [Bi-Directional Architecture](./docs/BIDI_ARCHITECTURE.md) - Voice agent architecture details
 - [Quick Start Guide](./docs/QUICKSTART.md) - Detailed setup instructions
 - [Docker Compose Guide](./docs/DOCKER_COMPOSE.md) - Local development setup
 - [A2A Migration Guide](./docs/agentcore_a2a_migration_guide__strands___cdk_.md) - A2A protocol details
-- [CDK Infrastructure](./infrastructure/cdk/README.md) - Deployment guide
+- [CDK Infrastructure](./infrastructure/cdk/README.md) - CDK stack details
 - [Testing Guide](./tests/README.md) - Test documentation
 
 ### External Resources
