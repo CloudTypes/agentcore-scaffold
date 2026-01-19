@@ -23,7 +23,8 @@ requests>=2.32.5
 # Audio processing
 numpy>=2.4.0
 soundfile>=0.13.1
-# Note: pyaudio is only needed for the voice agent and is included in agents/voice/requirements.txt
+pyaudio>=0.2.14
+# Note: pyaudio is required by strands library for BidiAgent imports
 # It requires system-level portaudio installation (portaudio19-dev on Linux, homebrew portaudio on macOS)
 
 # Google OAuth2
