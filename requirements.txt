@@ -11,7 +11,7 @@ websockets>=15.0.1
 # AWS SDK
 boto3>=1.42.17
 botocore>=1.42.17
-# Note: aws-sdk-bedrock-runtime requires Python 3.12+, removed for Python 3.11 compatibility
+# Note: aws-sdk-bedrock-runtime requires Python 3.12+ (now using Python 3.12)
 # boto3 and bedrock-agentcore provide the necessary Bedrock functionality
 
 # Tools and utilities
@@ -23,7 +23,8 @@ requests>=2.32.5
 # Audio processing
 numpy>=2.4.0
 soundfile>=0.13.1
-pyaudio>=0.2.14
+# Note: pyaudio is only needed for the voice agent and is included in agents/voice/requirements.txt
+# It requires system-level portaudio installation (portaudio19-dev on Linux, homebrew portaudio on macOS)
 
 # Google OAuth2
 google-auth>=2.23.0
