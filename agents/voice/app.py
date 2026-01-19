@@ -4,10 +4,12 @@ Main application with WebSocket endpoint for real-time voice conversations
 """
 
 import os
+import sys
 import asyncio
 import logging
 from pathlib import Path
-from typing import AsyncIterator, Dict, Any, Awaitable, Optional
+from typing import AsyncIterator, Dict, Any, Awaitable, Optional, Union
+from datetime import datetime
 from concurrent.futures._base import InvalidStateError
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Depends, HTTPException, status
 from fastapi.responses import JSONResponse, RedirectResponse, FileResponse
@@ -29,10 +31,10 @@ from strands.experimental.bidi.types.events import (
 )
 from strands.types._events import ToolUseStreamEvent
 from dotenv import load_dotenv
+import boto3
+from botocore.exceptions import ClientError
 
 # Import custom tools (from src/tools)
-import sys
-from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root / "src"))
 from tools.calculator import calculator
@@ -61,9 +63,42 @@ logging.getLogger('awscrt').setLevel(logging.WARNING)
 # Also suppress errors from concurrent.futures that are raised during cleanup
 logging.getLogger('concurrent.futures').setLevel(logging.WARNING)
 
+# WebSocket message type constants
+WS_MSG_TYPE_AUDIO = "audio"
+WS_MSG_TYPE_TEXT = "text"
+WS_MSG_TYPE_TRANSCRIPT = "transcript"
+WS_MSG_TYPE_RESPONSE_START = "response_start"
+WS_MSG_TYPE_RESPONSE_COMPLETE = "response_complete"
+WS_MSG_TYPE_ERROR = "error"
+WS_MSG_TYPE_CONNECTION_START = "connection_start"
+WS_MSG_TYPE_CONNECTION_CLOSE = "connection_close"
+WS_MSG_TYPE_TOOL_USE = "tool_use"
+
+# Audio configuration constants
+VALID_SAMPLE_RATES = [16000, 24000, 48000]
+VALID_AUDIO_FORMATS = ["pcm", "wav"]
+DEFAULT_SAMPLE_RATE = 16000
+DEFAULT_AUDIO_FORMAT = "pcm"
+DEFAULT_CHANNELS = 1
+
+# Role constants
+ROLE_ASSISTANT = "assistant"
+ROLE_USER = "user"
+
 # Custom exception handler to suppress AWS CRT cleanup errors from background tasks
 def suppress_awscrt_cleanup_error(exc_type, exc_value, exc_traceback):
-    """Suppress harmless AWS CRT cleanup errors that occur during WebSocket cleanup."""
+    """
+    Suppress harmless AWS CRT cleanup errors that occur during WebSocket cleanup.
+    
+    This custom exception handler filters out InvalidStateError exceptions that
+    contain "CANCELLED" or "cancelled" in their message, as these are harmless
+    race conditions that occur during WebSocket connection cleanup.
+    
+    Args:
+        exc_type: Exception type.
+        exc_value: Exception value.
+        exc_traceback: Exception traceback.
+    """
     if exc_type == InvalidStateError:
         error_str = str(exc_value)
         if "CANCELLED" in error_str or "cancelled" in error_str.lower():
@@ -72,11 +107,9 @@ def suppress_awscrt_cleanup_error(exc_type, exc_value, exc_traceback):
             return
     
     # For all other exceptions, use default handler
-    import sys
     sys.__excepthook__(exc_type, exc_value, exc_traceback)
 
 # Set custom exception handler
-import sys
 sys.excepthook = suppress_awscrt_cleanup_error
 
 # Initialize FastAPI app
@@ -96,7 +129,7 @@ app.add_middleware(
 )
 
 # Get the project root directory (agents/voice/app.py -> agents/voice -> agents -> project root)
-project_root = Path(__file__).parent.parent.parent
+# Note: project_root was already calculated above for sys.path, reuse it
 client_web_path = project_root / "client" / "web"
 
 # Serve static files (JS, CSS) from client/web directory
@@ -144,8 +177,228 @@ SYSTEM_PROMPT = config.get_config_value(
 )
 
 
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+def serialize_record(record: Union[Dict[str, Any], Any]) -> Union[Dict[str, Any], str]:
+    """
+    Convert datetime objects in record to strings for JSON serialization.
+    
+    Recursively processes dictionaries, lists, and objects to convert datetime
+    objects to ISO format strings. Handles nested structures and object-like
+    records that can be converted to dictionaries.
+    
+    Args:
+        record: Dictionary, object, or other value to serialize. If it's an object
+                with __dict__, it will be converted to a dict first.
+    
+    Returns:
+        Serialized dictionary with datetime objects converted to ISO format strings,
+        or a string representation if the record cannot be serialized as a dict.
+    """
+    if not isinstance(record, dict):
+        # If it's not a dict, try to convert it
+        if hasattr(record, '__dict__'):
+            record = record.__dict__
+        else:
+            return str(record)
+    
+    serialized = {}
+    for key, value in record.items():
+        if isinstance(value, datetime):
+            serialized[key] = value.isoformat()
+        elif isinstance(value, dict):
+            serialized[key] = serialize_record(value)
+        elif isinstance(value, list):
+            serialized[key] = [
+                serialize_record(item) if isinstance(item, dict) else 
+                (item.isoformat() if isinstance(item, datetime) else item)
+                for item in value
+            ]
+        else:
+            serialized[key] = value
+    return serialized
+
+
+def format_memory_record(record: Union[Dict[str, Any], Any]) -> Dict[str, str]:
+    """
+    Format a memory record for frontend consumption.
+    
+    Extracts content text and namespace from a memory record, handling both
+    dictionary and object-like records.
+    
+    Args:
+        record: Memory record (dict or object with content/namespace attributes).
+    
+    Returns:
+        Dictionary with 'content' and 'namespace' keys.
+    """
+    if isinstance(record, dict):
+        content = record.get("content", {})
+        if isinstance(content, dict):
+            text = content.get("text", "")
+        else:
+            text = str(content) if content else ""
+        
+        return {
+            "content": text,
+            "namespace": record.get("namespace", "")
+        }
+    else:
+        # Fallback for object-like records
+        content_attr = getattr(record, "content", None)
+        if content_attr and isinstance(content_attr, dict):
+            text = content_attr.get("text", "")
+        elif content_attr:
+            text = str(content_attr)
+        else:
+            text = str(record)
+        
+        return {
+            "content": text,
+            "namespace": getattr(record, "namespace", "")
+        }
+
+
+def format_preference_record(record: Union[Dict[str, Any], Any]) -> Dict[str, str]:
+    """
+    Format a preference record for frontend consumption.
+    
+    Extracts content text and namespace from a preference record, handling both
+    dictionary and object-like records.
+    
+    Args:
+        record: Preference record (dict or object with content/namespace attributes).
+    
+    Returns:
+        Dictionary with 'content' and 'namespace' keys.
+    """
+    if isinstance(record, dict):
+        content = record.get("content", {})
+        if isinstance(content, dict):
+            text = content.get("text", "")
+        else:
+            text = str(content) if content else ""
+        
+        return {
+            "content": text,
+            "namespace": record.get("namespace", "")
+        }
+    else:
+        # Fallback for object-like records
+        content_attr = getattr(record, "content", None)
+        if content_attr and hasattr(content_attr, "get"):
+            text = content_attr.get("text", "")
+        elif content_attr:
+            text = str(content_attr)
+        else:
+            text = str(record)
+        
+        return {
+            "content": text,
+            "namespace": getattr(record, "namespace", "")
+        }
+
+
+def _sanitize_actor_id(actor_id: str) -> str:
+    """
+    Sanitize actor ID for use in namespace paths.
+    
+    Replaces special characters (@, .) with underscores and ensures the
+    ID starts with an alphanumeric character.
+    
+    Args:
+        actor_id: Original actor ID (typically an email address).
+    
+    Returns:
+        Sanitized actor ID safe for use in namespace paths.
+    """
+    sanitized = actor_id.replace("@", "_").replace(".", "_")
+    if not sanitized[0].isalnum():
+        sanitized = "user_" + sanitized
+    return sanitized
+
+
+def _check_namespace(
+    bedrock_client: Any,
+    memory_id: str,
+    namespace: str,
+    max_results: int = 10,
+    sample_size: Optional[int] = None
+) -> Dict[str, Any]:
+    """
+    Check a namespace for memory records.
+    
+    Queries the Bedrock AgentCore client for records in the specified namespace
+    and returns diagnostic information including record count and sample records.
+    
+    Args:
+        bedrock_client: Boto3 Bedrock AgentCore client instance.
+        memory_id: Memory ID to query.
+        namespace: Namespace path to check.
+        max_results: Maximum number of records to retrieve (default: 10).
+        sample_size: Number of records to include in sample (default: 3, or all if None).
+    
+    Returns:
+        Dictionary containing:
+            - namespace: The namespace that was checked.
+            - record_count: Number of records found.
+            - records: Sample of serialized records (if any).
+            - success: Boolean indicating if the check succeeded.
+            - error: Error message (if check failed).
+            - error_code: AWS error code (if check failed).
+    """
+    try:
+        response = bedrock_client.list_memory_records(
+            memoryId=memory_id,
+            namespace=namespace,
+            maxResults=max_results
+        )
+        records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
+        for record in records:
+            if isinstance(record, dict) and 'namespace' not in record:
+                record['namespace'] = namespace
+        
+        # Serialize records to handle datetime objects
+        if sample_size is None:
+            sample_size = len(records) if records else 0
+        serialized_records = [serialize_record(r) for r in records[:sample_size]] if records else []
+        
+        return {
+            "namespace": namespace,
+            "record_count": len(records),
+            "records": serialized_records,
+            "success": True
+        }
+    except ClientError as e:
+        error_code = e.response.get('Error', {}).get('Code', '')
+        error_msg = e.response.get('Error', {}).get('Message', '')
+        return {
+            "namespace": namespace,
+            "error": error_msg,
+            "error_code": error_code,
+            "success": False
+        }
+    except Exception as e:
+        return {
+            "namespace": namespace,
+            "error": str(e),
+            "success": False
+        }
+
+
+# ============================================================================
+# Model and Agent Creation
+# ============================================================================
+
 def create_nova_sonic_model() -> BidiNovaSonicModel:
-    """Create and configure Nova Sonic model for bi-directional streaming."""
+    """
+    Create and configure Nova Sonic model for bi-directional streaming.
+    
+    Returns:
+        Configured BidiNovaSonicModel instance with audio settings.
+    """
     return BidiNovaSonicModel(
         region=AWS_REGION,
         model_id=MODEL_ID,
@@ -160,7 +413,17 @@ def create_nova_sonic_model() -> BidiNovaSonicModel:
 
 
 def create_agent(model: BidiNovaSonicModel, system_prompt: Optional[str] = None) -> BidiAgent:
-    """Create Strands BidiAgent with tools and system prompt."""
+    """
+    Create Strands BidiAgent with tools and system prompt.
+    
+    Args:
+        model: BidiNovaSonicModel instance to use for the agent.
+        system_prompt: Optional system prompt. If not provided, uses the default
+                     SYSTEM_PROMPT from configuration.
+    
+    Returns:
+        Configured BidiAgent instance with calculator, weather, and database tools.
+    """
     prompt = system_prompt or SYSTEM_PROMPT
     return BidiAgent(
         model=model,
@@ -178,6 +441,13 @@ class WebSocketOutput:
     """
     
     def __init__(self, websocket: WebSocket, session_manager: Optional[MemorySessionManager] = None):
+        """
+        Initialize WebSocket output handler.
+        
+        Args:
+            websocket: WebSocket connection to send messages to.
+            session_manager: Optional memory session manager for storing interactions.
+        """
         self.websocket = websocket
         self.session_manager = session_manager
         self._stopped = False
@@ -185,12 +455,21 @@ class WebSocketOutput:
         self._current_transcript = ""
     
     async def start(self, agent: BidiAgent) -> None:
-        """Start the output handler."""
+        """
+        Start the output handler.
+        
+        Args:
+            agent: BidiAgent instance (required by protocol, not used here).
+        """
         self._stopped = False
         self._event_count = 0
     
     async def stop(self) -> None:
-        """Stop the output handler."""
+        """
+        Stop the output handler.
+        
+        Marks the handler as stopped, preventing further event processing.
+        """
         self._stopped = True
     
     async def __call__(self, event) -> None:
@@ -213,7 +492,7 @@ class WebSocketOutput:
             if isinstance(event, BidiAudioStreamEvent):
                 # Audio stream event - send audio data
                 await self.websocket.send_json({
-                    "type": "audio",
+                    "type": WS_MSG_TYPE_AUDIO,
                     "data": event.audio,
                     "format": event.format,
                     "sample_rate": event.sample_rate
@@ -224,14 +503,14 @@ class WebSocketOutput:
                 # Transcript stream event - can be user or assistant transcript
                 # Use the role to determine if it's user or agent speech
                 # Only send final transcripts to avoid duplicates from incremental updates
-                role = getattr(event, 'role', 'assistant')  # Default to assistant if role not present
+                role = getattr(event, 'role', ROLE_ASSISTANT)  # Default to assistant if role not present
                 is_final = getattr(event, 'is_final', False)
                 
                 logger.info(f"[OUTPUT] Transcript event - role: {role}, final: {is_final}, text: {event.text[:100] if event.text else 'empty'}")
                 
                 if is_final:
                     await self.websocket.send_json({
-                        "type": "transcript",
+                        "type": WS_MSG_TYPE_TRANSCRIPT,
                         "data": event.text,
                         "role": role
                     })
@@ -239,9 +518,9 @@ class WebSocketOutput:
                     
                     # Store in memory if session manager is available
                     if self.session_manager:
-                        if role == 'assistant':
+                        if role == ROLE_ASSISTANT:
                             self.session_manager.store_agent_response(audio_transcript=event.text)
-                        elif role == 'user':
+                        elif role == ROLE_USER:
                             self.session_manager.store_user_input(audio_transcript=event.text)
                 else:
                     # Log incremental updates at debug level but don't send to client
@@ -250,37 +529,37 @@ class WebSocketOutput:
             elif isinstance(event, BidiResponseStartEvent):
                 logger.info("Agent response started")
                 await self.websocket.send_json({
-                    "type": "response_start"
+                    "type": WS_MSG_TYPE_RESPONSE_START
                 })
                 
             elif isinstance(event, BidiResponseCompleteEvent):
                 logger.info("Agent response completed")
                 await self.websocket.send_json({
-                    "type": "response_complete"
+                    "type": WS_MSG_TYPE_RESPONSE_COMPLETE
                 })
                 
             elif isinstance(event, BidiErrorEvent):
                 logger.error(f"Agent error: {event.error}")
                 await self.websocket.send_json({
-                    "type": "error",
+                    "type": WS_MSG_TYPE_ERROR,
                     "message": str(event.error)
                 })
             elif isinstance(event, BidiConnectionStartEvent):
                 logger.info("Agent connection started")
                 await self.websocket.send_json({
-                    "type": "connection_start"
+                    "type": WS_MSG_TYPE_CONNECTION_START
                 })
             elif isinstance(event, BidiConnectionCloseEvent):
                 logger.info("Agent connection closed")
                 await self.websocket.send_json({
-                    "type": "connection_close"
+                    "type": WS_MSG_TYPE_CONNECTION_CLOSE
                 })
             elif isinstance(event, ToolUseStreamEvent):
                 tool_name = getattr(event, 'tool_name', 'unknown')
                 tool_content = str(getattr(event, 'content', ''))[:200]
                 logger.info(f"Tool use: {tool_name}")
                 await self.websocket.send_json({
-                    "type": "tool_use",
+                    "type": WS_MSG_TYPE_TOOL_USE,
                     "tool": tool_name,
                     "data": tool_content
                 })
@@ -323,6 +602,13 @@ class WebSocketInput:
     """
     
     def __init__(self, websocket: WebSocket, session_manager: Optional[MemorySessionManager] = None):
+        """
+        Initialize WebSocket input handler.
+        
+        Args:
+            websocket: WebSocket connection to read messages from.
+            session_manager: Optional memory session manager for storing user inputs.
+        """
         self.websocket = websocket
         self.session_manager = session_manager
         self._stopped = False
@@ -330,11 +616,20 @@ class WebSocketInput:
         self._text_pending = False    # Flag for pending text input
     
     async def start(self, agent: BidiAgent) -> None:
-        """Start the input source."""
+        """
+        Start the input source.
+        
+        Args:
+            agent: BidiAgent instance (required by protocol, not used here).
+        """
         self._stopped = False
     
     async def stop(self) -> None:
-        """Stop the input source."""
+        """
+        Stop the input source.
+        
+        Marks the handler as stopped, preventing further input reading.
+        """
         self._stopped = True
     
     def __call__(self) -> Awaitable[BidiTextInputEvent | BidiAudioInputEvent]:
@@ -342,12 +637,20 @@ class WebSocketInput:
         Read input data from the WebSocket.
         
         Returns:
-            Coroutine that resolves to a BidiInputEvent (text or audio)
+            Coroutine that resolves to a BidiInputEvent (text or audio).
         """
         return self._read_next()
     
     async def _read_next(self) -> BidiTextInputEvent | BidiAudioInputEvent:
-        """Read the next event from the WebSocket."""
+        """
+        Read the next event from the WebSocket.
+        
+        Returns:
+            BidiTextInputEvent or BidiAudioInputEvent based on received data.
+        
+        Raises:
+            StopAsyncIteration: When the WebSocket is disconnected or stopped.
+        """
         if self._stopped:
             raise StopAsyncIteration
         
@@ -356,18 +659,18 @@ class WebSocketInput:
             data = await self.websocket.receive_json()
             
             # Convert to appropriate event type
-            if "audio" in data:
+            if WS_MSG_TYPE_AUDIO in data:
                 # Audio input - base64 encoded audio data
-                self._last_input_type = "audio"
-                audio_data = data["audio"]
+                self._last_input_type = WS_MSG_TYPE_AUDIO
+                audio_data = data[WS_MSG_TYPE_AUDIO]
                 sample_rate = data.get("sample_rate", INPUT_SAMPLE_RATE)
                 # Ensure sample_rate is one of the valid values
-                if sample_rate not in [16000, 24000, 48000]:
-                    sample_rate = 16000  # Default to 16000 if invalid
+                if sample_rate not in VALID_SAMPLE_RATES:
+                    sample_rate = DEFAULT_SAMPLE_RATE
                 
-                format_type = data.get("format", "pcm")  # Default to PCM (required by Nova Sonic)
+                format_type = data.get("format", DEFAULT_AUDIO_FORMAT)
                 # Nova Sonic requires Linear PCM format
-                if format_type not in ["pcm", "wav"]:
+                if format_type not in VALID_AUDIO_FORMATS:
                     logger.error(f"Received {format_type} format - Nova Sonic requires PCM format!")
                     logger.error("Please convert audio to PCM on the client side before sending")
                     # Skip this invalid chunk and read the next message
@@ -380,17 +683,16 @@ class WebSocketInput:
                     audio=audio_data,
                     format=format_type,
                     sample_rate=sample_rate,
-                    channels=data.get("channels", 1)  # Default to mono
+                    channels=data.get("channels", DEFAULT_CHANNELS)
                 )
                 
-                
                 return audio_event
-            elif "text" in data:
-                text = data["text"]
+            elif WS_MSG_TYPE_TEXT in data:
+                text = data[WS_MSG_TYPE_TEXT]
                 logger.info(f"[TEXT INPUT] Received text message: {text}")
                 logger.debug(f"[TEXT INPUT] WebSocket state: {self.websocket.client_state if hasattr(self.websocket, 'client_state') else 'unknown'}")
                 logger.debug(f"[TEXT INPUT] Session manager: {self.session_manager is not None}")
-                self._last_input_type = "text"
+                self._last_input_type = WS_MSG_TYPE_TEXT
                 
                 # Store user input in memory if session manager is available
                 if self.session_manager:
@@ -553,7 +855,7 @@ async def websocket_endpoint(websocket: WebSocket):
             # Try to send error to client
             try:
                 await websocket.send_json({
-                    "type": "error",
+                    "type": WS_MSG_TYPE_ERROR,
                     "message": f"Agent error: {str(e)}"
                 })
             except:
@@ -581,7 +883,7 @@ async def websocket_endpoint(websocket: WebSocket):
             logger.error(f"Error in websocket_endpoint: {e}", exc_info=True)
         try:
             await websocket.send_json({
-                "type": "error",
+                "type": WS_MSG_TYPE_ERROR,
                 "message": str(e)
             })
         except (WebSocketDisconnect, RuntimeError):
@@ -613,8 +915,21 @@ async def health_check():
 
 # Authentication endpoints
 @app.get("/api/auth/login")
-async def login(request: Request):
-    """Initiate Google OAuth2 login."""
+async def login(request: Request) -> RedirectResponse:
+    """
+    Initiate Google OAuth2 login.
+    
+    Redirects the user to Google's OAuth2 authorization page.
+    
+    Args:
+        request: FastAPI request object containing optional 'state' query parameter.
+    
+    Returns:
+        RedirectResponse to Google OAuth2 authorization URL.
+    
+    Raises:
+        HTTPException: If OAuth2 handler is not configured.
+    """
     if not oauth2_handler:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -627,8 +942,24 @@ async def login(request: Request):
 
 
 @app.get("/api/auth/callback")
-async def auth_callback(request: Request, code: str, state: Optional[str] = None):
-    """Handle OAuth2 callback."""
+async def auth_callback(request: Request, code: str, state: Optional[str] = None) -> RedirectResponse:
+    """
+    Handle OAuth2 callback from Google.
+    
+    Processes the OAuth2 authorization code and redirects to the frontend
+    with an authentication token.
+    
+    Args:
+        request: FastAPI request object.
+        code: Authorization code from Google OAuth2.
+        state: Optional state parameter for CSRF protection.
+    
+    Returns:
+        RedirectResponse to frontend with authentication token in query parameter.
+    
+    Raises:
+        HTTPException: If OAuth2 handler is not configured or callback processing fails.
+    """
     if not oauth2_handler:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -650,14 +981,31 @@ async def auth_callback(request: Request, code: str, state: Optional[str] = None
 
 
 @app.get("/api/auth/me")
-async def get_me(request: Request, user: Dict[str, Any] = Depends(get_current_user)):
-    """Get current user information."""
+async def get_me(request: Request, user: Dict[str, Any] = Depends(get_current_user)) -> JSONResponse:
+    """
+    Get current user information.
+    
+    Args:
+        request: FastAPI request object.
+        user: Authenticated user information from OAuth2 middleware.
+    
+    Returns:
+        JSONResponse containing user information.
+    """
     return JSONResponse(content=user)
 
 
 @app.post("/api/auth/logout")
-async def logout():
-    """Logout endpoint (client should clear token)."""
+async def logout() -> JSONResponse:
+    """
+    Logout endpoint (client should clear token).
+    
+    Note: This endpoint does not invalidate the token server-side.
+    The client is responsible for clearing the token from storage.
+    
+    Returns:
+        JSONResponse with logout confirmation message.
+    """
     return JSONResponse(content={"message": "Logged out"})
 
 
@@ -667,8 +1015,28 @@ async def query_memories(
     request: Request,
     query: Dict[str, Any],
     user: Dict[str, Any] = Depends(get_current_user)
-):
-    """Query memories for current user."""
+) -> JSONResponse:
+    """
+    Query memories for current user.
+    
+    Retrieves memories from the memory client based on the provided query parameters.
+    Supports filtering by namespace, memory type, and semantic search.
+    
+    Args:
+        request: FastAPI request object.
+        query: Dictionary containing query parameters:
+            - query: Optional text query for semantic search.
+            - namespace: Optional namespace prefix to filter memories.
+            - memory_type: Optional memory type ("summaries", "preferences", or "semantic").
+            - top_k: Optional number of results to return (default: 5).
+        user: Authenticated user information from OAuth2 middleware.
+    
+    Returns:
+        JSONResponse containing a list of formatted memory records.
+    
+    Raises:
+        HTTPException: If memory client is not enabled or unavailable.
+    """
     if not memory_client:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -688,34 +1056,8 @@ async def query_memories(
         memory_type=memory_type
     )
     
-    # Format memories for frontend
-    formatted_memories = []
-    for m in memories:
-        if isinstance(m, dict):
-            content = m.get("content", {})
-            if isinstance(content, dict):
-                text = content.get("text", "")
-            else:
-                text = str(content) if content else ""
-            
-            formatted_memories.append({
-                "content": text,
-                "namespace": m.get("namespace", "")
-            })
-        else:
-            # Fallback for object-like records
-            content_attr = getattr(m, "content", None)
-            if content_attr and isinstance(content_attr, dict):
-                text = content_attr.get("text", "")
-            elif content_attr:
-                text = str(content_attr)
-            else:
-                text = str(m)
-            
-            formatted_memories.append({
-                "content": text,
-                "namespace": getattr(m, "namespace", "")
-            })
+    # Format memories for frontend using helper function
+    formatted_memories = [format_memory_record(m) for m in memories]
     
     return JSONResponse(content={"memories": formatted_memories})
 
@@ -779,8 +1121,21 @@ async def create_session(
 
 
 @app.get("/api/memory/sessions")
-async def list_sessions(user: Dict[str, Any] = Depends(get_current_user)):
-    """List user's sessions."""
+async def list_sessions(user: Dict[str, Any] = Depends(get_current_user)) -> JSONResponse:
+    """
+    List user's sessions.
+    
+    Retrieves all memory sessions for the authenticated user.
+    
+    Args:
+        user: Authenticated user information from OAuth2 middleware.
+    
+    Returns:
+        JSONResponse containing a list of session records with session_id and summary.
+    
+    Raises:
+        HTTPException: If memory client is not enabled or unavailable.
+    """
     if not memory_client:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -808,40 +1163,28 @@ async def list_sessions(user: Dict[str, Any] = Depends(get_current_user)):
 
 
 @app.get("/api/memory/sessions/{session_id}")
-async def get_session(session_id: str, user: Dict[str, Any] = Depends(get_current_user)):
-    """Get session details and summary."""
+async def get_session(session_id: str, user: Dict[str, Any] = Depends(get_current_user)) -> JSONResponse:
+    """
+    Get session details and summary.
+    
+    Retrieves the full session record including summary and metadata for a
+    specific session ID.
+    
+    Args:
+        session_id: Unique identifier for the session.
+        user: Authenticated user information from OAuth2 middleware.
+    
+    Returns:
+        JSONResponse containing session_id, namespace, summary, and full_record.
+    
+    Raises:
+        HTTPException: If memory client is not enabled, unavailable, or session not found.
+    """
     if not memory_client:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Memory not enabled"
         )
-    
-    from datetime import datetime
-    
-    def serialize_record(record):
-        """Convert datetime objects in record to strings for JSON serialization."""
-        if not isinstance(record, dict):
-            # If it's not a dict, try to convert it
-            if hasattr(record, '__dict__'):
-                record = record.__dict__
-            else:
-                return str(record)
-        
-        serialized = {}
-        for key, value in record.items():
-            if isinstance(value, datetime):
-                serialized[key] = value.isoformat()
-            elif isinstance(value, dict):
-                serialized[key] = serialize_record(value)
-            elif isinstance(value, list):
-                serialized[key] = [
-                    serialize_record(item) if isinstance(item, dict) else 
-                    (item.isoformat() if isinstance(item, datetime) else item)
-                    for item in value
-                ]
-            else:
-                serialized[key] = value
-        return serialized
     
     actor_id = user.get("email")
     summary_record = memory_client.get_session_summary(actor_id=actor_id, session_id=session_id)
@@ -888,15 +1231,41 @@ async def get_session(session_id: str, user: Dict[str, Any] = Depends(get_curren
 
 
 @app.delete("/api/memory/sessions/{session_id}")
-async def delete_session(session_id: str, user: Dict[str, Any] = Depends(get_current_user)):
-    """Delete a session's memories."""
+async def delete_session(session_id: str, user: Dict[str, Any] = Depends(get_current_user)) -> JSONResponse:
+    """
+    Delete a session's memories.
+    
+    Note: This endpoint currently returns a success message but does not
+    actually delete the session. Full implementation would require additional
+    memory client methods.
+    
+    Args:
+        session_id: Unique identifier for the session to delete.
+        user: Authenticated user information from OAuth2 middleware.
+    
+    Returns:
+        JSONResponse with deletion confirmation message.
+    """
     # This would require additional implementation
     return JSONResponse(content={"message": "Session deleted"})
 
 
 @app.get("/api/memory/preferences")
-async def get_preferences(user: Dict[str, Any] = Depends(get_current_user)):
-    """Get user preferences."""
+async def get_preferences(user: Dict[str, Any] = Depends(get_current_user)) -> JSONResponse:
+    """
+    Get user preferences.
+    
+    Retrieves all preference records for the authenticated user.
+    
+    Args:
+        user: Authenticated user information from OAuth2 middleware.
+    
+    Returns:
+        JSONResponse containing a list of formatted preference records.
+    
+    Raises:
+        HTTPException: If memory client is not enabled or unavailable.
+    """
     if not memory_client:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -906,35 +1275,8 @@ async def get_preferences(user: Dict[str, Any] = Depends(get_current_user)):
     actor_id = user.get("email")
     preferences = memory_client.get_user_preferences(actor_id=actor_id)
     
-    # Format preferences for frontend
-    formatted_prefs = []
-    for p in preferences:
-        if isinstance(p, dict):
-            # Memory record is a dictionary
-            content = p.get("content", {})
-            if isinstance(content, dict):
-                text = content.get("text", "")
-            else:
-                text = str(content) if content else ""
-            
-            formatted_prefs.append({
-                "content": text,
-                "namespace": p.get("namespace", "")
-            })
-        else:
-            # Fallback for object-like records
-            content_attr = getattr(p, "content", None)
-            if content_attr and hasattr(content_attr, "get"):
-                text = content_attr.get("text", "")
-            elif content_attr:
-                text = str(content_attr)
-            else:
-                text = str(p)
-            
-            formatted_prefs.append({
-                "content": text,
-                "namespace": getattr(p, "namespace", "")
-            })
+    # Format preferences for frontend using helper function
+    formatted_prefs = [format_preference_record(p) for p in preferences]
     
     return JSONResponse(content={"preferences": formatted_prefs})
 
@@ -944,42 +1286,46 @@ async def diagnose_memory(
     request: Request,
     query: Dict[str, Any],
     user: Dict[str, Any] = Depends(get_current_user)
-):
-    """Run comprehensive memory diagnostics."""
+) -> JSONResponse:
+    """
+    Run comprehensive memory diagnostics.
+    
+    Performs diagnostic checks on multiple memory namespaces to verify
+    memory system health and retrieve sample records. Checks include:
+    - Parent summaries namespace
+    - Exact session namespace (if session_id provided)
+    - Semantic memory namespace
+    - Preferences namespace
+    
+    Args:
+        request: FastAPI request object.
+        query: Dictionary containing optional 'session_id' parameter.
+        user: Authenticated user information from OAuth2 middleware.
+    
+    Returns:
+        JSONResponse containing diagnostic information including:
+            - user_id: Original actor ID.
+            - sanitized_user_id: Sanitized actor ID for namespaces.
+            - session_id: Session ID if provided.
+            - memory_id: Memory resource ID.
+            - region: AWS region.
+            - checks: Dictionary of namespace check results.
+            - total_records: Total number of records across all namespaces.
+    
+    Raises:
+        HTTPException: If memory client is not enabled or unavailable.
+    """
     if not memory_client:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Memory not enabled"
         )
     
-    import boto3
-    from botocore.exceptions import ClientError
-    from datetime import datetime
-    
-    def serialize_record(record):
-        """Convert datetime objects in record to strings for JSON serialization."""
-        if not isinstance(record, dict):
-            return record
-        
-        serialized = {}
-        for key, value in record.items():
-            if isinstance(value, datetime):
-                serialized[key] = value.isoformat()
-            elif isinstance(value, dict):
-                serialized[key] = serialize_record(value)
-            elif isinstance(value, list):
-                serialized[key] = [serialize_record(item) if isinstance(item, dict) else item for item in value]
-            else:
-                serialized[key] = value
-        return serialized
-    
     actor_id = user.get("email")
     session_id = query.get("session_id")
     
     # Sanitize actor_id
-    sanitized_actor_id = actor_id.replace("@", "_").replace(".", "_")
-    if not sanitized_actor_id[0].isalnum():
-        sanitized_actor_id = "user_" + sanitized_actor_id
+    sanitized_actor_id = _sanitize_actor_id(actor_id)
     
     diagnostics = {
         "user_id": actor_id,
@@ -994,156 +1340,28 @@ async def diagnose_memory(
     
     # Check 1: Parent namespace (summaries/{actorId})
     parent_ns = f"/summaries/{sanitized_actor_id}"
-    try:
-        response = bedrock_client.list_memory_records(
-            memoryId=memory_client.memory_id,
-            namespace=parent_ns,
-            maxResults=10
-        )
-        records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
-        for record in records:
-            if isinstance(record, dict) and 'namespace' not in record:
-                record['namespace'] = parent_ns
-        
-        # Serialize records to handle datetime objects
-        serialized_records = [serialize_record(r) for r in records[:3]] if records else []
-        
-        diagnostics["checks"]["parent_namespace"] = {
-            "namespace": parent_ns,
-            "record_count": len(records),
-            "records": serialized_records,
-            "success": True
-        }
-    except ClientError as e:
-        error_code = e.response.get('Error', {}).get('Code', '')
-        error_msg = e.response.get('Error', {}).get('Message', '')
-        diagnostics["checks"]["parent_namespace"] = {
-            "namespace": parent_ns,
-            "error": error_msg,
-            "error_code": error_code,
-            "success": False
-        }
-    except Exception as e:
-        diagnostics["checks"]["parent_namespace"] = {
-            "namespace": parent_ns,
-            "error": str(e),
-            "success": False
-        }
+    diagnostics["checks"]["parent_namespace"] = _check_namespace(
+        bedrock_client, memory_client.memory_id, parent_ns, sample_size=3
+    )
     
     # Check 2: Exact session namespace (if session_id provided)
     if session_id:
         exact_ns = f"/summaries/{sanitized_actor_id}/{session_id}"
-        try:
-            response = bedrock_client.list_memory_records(
-                memoryId=memory_client.memory_id,
-                namespace=exact_ns,
-                maxResults=10
-            )
-            records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
-            for record in records:
-                if isinstance(record, dict) and 'namespace' not in record:
-                    record['namespace'] = exact_ns
-            
-            # Serialize records to handle datetime objects
-            serialized_records = [serialize_record(r) for r in records]
-            
-            diagnostics["checks"]["exact_namespace"] = {
-                "namespace": exact_ns,
-                "record_count": len(records),
-                "records": serialized_records,
-                "success": True
-            }
-        except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', '')
-            error_msg = e.response.get('Error', {}).get('Message', '')
-            diagnostics["checks"]["exact_namespace"] = {
-                "namespace": exact_ns,
-                "error": error_msg,
-                "error_code": error_code,
-                "success": False
-            }
-        except Exception as e:
-            diagnostics["checks"]["exact_namespace"] = {
-                "namespace": exact_ns,
-                "error": str(e),
-                "success": False
-            }
+        diagnostics["checks"]["exact_namespace"] = _check_namespace(
+            bedrock_client, memory_client.memory_id, exact_ns
+        )
     
     # Check 3: Semantic namespace
     semantic_ns = f"/semantic/{sanitized_actor_id}"
-    try:
-        response = bedrock_client.list_memory_records(
-            memoryId=memory_client.memory_id,
-            namespace=semantic_ns,
-            maxResults=10
-        )
-        records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
-        for record in records:
-            if isinstance(record, dict) and 'namespace' not in record:
-                record['namespace'] = semantic_ns
-        
-        # Serialize records to handle datetime objects
-        serialized_records = [serialize_record(r) for r in records[:3]] if records else []
-        
-        diagnostics["checks"]["semantic_namespace"] = {
-            "namespace": semantic_ns,
-            "record_count": len(records),
-            "records": serialized_records,
-            "success": True
-        }
-    except ClientError as e:
-        error_code = e.response.get('Error', {}).get('Code', '')
-        error_msg = e.response.get('Error', {}).get('Message', '')
-        diagnostics["checks"]["semantic_namespace"] = {
-            "namespace": semantic_ns,
-            "error": error_msg,
-            "error_code": error_code,
-            "success": False
-        }
-    except Exception as e:
-        diagnostics["checks"]["semantic_namespace"] = {
-            "namespace": semantic_ns,
-            "error": str(e),
-            "success": False
-        }
+    diagnostics["checks"]["semantic_namespace"] = _check_namespace(
+        bedrock_client, memory_client.memory_id, semantic_ns, sample_size=3
+    )
     
     # Check 4: Preferences namespace
     prefs_ns = f"/preferences/{sanitized_actor_id}"
-    try:
-        response = bedrock_client.list_memory_records(
-            memoryId=memory_client.memory_id,
-            namespace=prefs_ns,
-            maxResults=10
-        )
-        records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
-        for record in records:
-            if isinstance(record, dict) and 'namespace' not in record:
-                record['namespace'] = prefs_ns
-        
-        # Serialize records to handle datetime objects
-        serialized_records = [serialize_record(r) for r in records[:3]] if records else []
-        
-        diagnostics["checks"]["preferences_namespace"] = {
-            "namespace": prefs_ns,
-            "record_count": len(records),
-            "records": serialized_records,
-            "success": True
-        }
-    except ClientError as e:
-        error_code = e.response.get('Error', {}).get('Code', '')
-        error_msg = e.response.get('Error', {}).get('Message', '')
-        diagnostics["checks"]["preferences_namespace"] = {
-            "namespace": prefs_ns,
-            "error": error_msg,
-            "error_code": error_code,
-            "success": False
-        }
-    except Exception as e:
-        diagnostics["checks"]["preferences_namespace"] = {
-            "namespace": prefs_ns,
-            "error": str(e),
-            "success": False
-        }
+    diagnostics["checks"]["preferences_namespace"] = _check_namespace(
+        bedrock_client, memory_client.memory_id, prefs_ns, sample_size=3
+    )
     
     # Calculate total records
     total_records = 0
@@ -1156,9 +1374,17 @@ async def diagnose_memory(
     return JSONResponse(content=diagnostics)
 
 
-@app.get("/")
-async def root():
-    """Serve the frontend HTML file or return API information."""
+@app.get("/", response_model=None)
+async def root() -> Union[FileResponse, JSONResponse]:
+    """
+    Serve the frontend HTML file or return API information.
+    
+    If the frontend index.html file exists, it is served. Otherwise,
+    returns API information as JSON.
+    
+    Returns:
+        FileResponse if index.html exists, otherwise JSONResponse with API information.
+    """
     index_path = client_web_path / "index.html"
     if index_path.exists():
         return FileResponse(str(index_path))
@@ -1192,8 +1418,14 @@ async def root():
 
 
 @app.get("/api")
-async def api_info():
-    """API information endpoint."""
+async def api_info() -> JSONResponse:
+    """
+    API information endpoint.
+    
+    Returns:
+        JSONResponse containing service information, available endpoints,
+        model configuration, and feature flags (memory/auth enabled).
+    """
     return JSONResponse(
         content={
             "service": "AgentCore Voice Agent",

@@ -23,12 +23,13 @@ async def test_service_discovery():
     os.environ["ENVIRONMENT"] = "development"
     discovery = ServiceDiscovery()
     
-    # A2A protocol uses port 9000, not 8080
-    assert discovery.get_endpoint("orchestrator") == "http://orchestrator:9000"
-    assert discovery.get_endpoint("vision") == "http://vision:9000"
-    assert discovery.get_endpoint("document") == "http://document:9000"
-    assert discovery.get_endpoint("data") == "http://data:9000"
-    assert discovery.get_endpoint("tool") == "http://tool:9000"
+    # In development mode, service discovery uses localhost with default ports
+    # These match the DEFAULT_DEV_ENDPOINTS in service_discovery.py
+    assert discovery.get_endpoint("orchestrator") == "http://localhost:9005"
+    assert discovery.get_endpoint("vision") == "http://localhost:9001"
+    assert discovery.get_endpoint("document") == "http://localhost:9002"
+    assert discovery.get_endpoint("data") == "http://localhost:9003"
+    assert discovery.get_endpoint("tool") == "http://localhost:9004"
 
 
 @pytest.mark.asyncio

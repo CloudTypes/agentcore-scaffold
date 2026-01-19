@@ -37,21 +37,26 @@ class MultiAgentStack(Stack):
         """
         super().__init__(scope, construct_id, **kwargs)
 
-        # Get ECR repository from base stack or context
+        # Get ECR repositories from base stack or context
+        env_name = self.node.try_get_context("environment") or "dev"
+        
         if base_stack:
-            ecr_repo = base_stack.ecr_repo
+            ecr_repos = base_stack.ecr_repos
             agentcore_role = base_stack.agentcore_role
         else:
-            # Try to get from context or create new
+            # Try to get from context or create new (legacy support)
             ecr_repo_uri = self.node.try_get_context("ecr_repo_uri")
             if ecr_repo_uri:
-                ecr_repo = ecr.Repository.from_repository_attributes(
-                    self, "ECRRepo",
-                    repository_arn=f"arn:aws:ecr:{self.region}:{self.account}:repository/agentcore-voice-agent",
-                    repository_name="agentcore-voice-agent"
-                )
+                # Create a dict with single repo for backward compatibility
+                ecr_repos = {
+                    "orchestrator": ecr.Repository.from_repository_attributes(
+                        self, "ECRRepo",
+                        repository_arn=f"arn:aws:ecr:{self.region}:{self.account}:repository/agentcore-voice-agent-orchestrator",
+                        repository_name="agentcore-voice-agent-orchestrator"
+                    )
+                }
             else:
-                raise ValueError("ECR repository is required. Provide base_stack or set ecr_repo_uri in context.")
+                raise ValueError("ECR repositories are required. Provide base_stack or set ecr_repo_uri in context.")
             
             role_arn = self.node.try_get_context("agentcore_role_arn")
             if role_arn:
@@ -109,12 +114,24 @@ class MultiAgentStack(Stack):
         agent_endpoints = {}
 
         for agent_name in agents:
-            runtime_name = f"{agent_name}-agent-{self.node.try_get_context('environment') or 'dev'}"
-            image_tag = self.node.try_get_context("image_tag") or "latest"
+            runtime_name = f"{agent_name}-agent-{env_name}"
             
-            # Construct full image URI
-            repo_uri_clean = ecr_repo.repository_uri.replace("https://", "").replace("http://", "")
-            image_uri = f"{repo_uri_clean}:{agent_name}-{image_tag}"
+            # Get image tag from SSM Parameter Store (updated by CodeBuild)
+            # Parameter is created in base stack, reference it here
+            image_tag_param = ssm.StringParameter.from_string_parameter_name(
+                self,
+                f"{agent_name.capitalize()}ImageTagParam",
+                string_parameter_name=f"/agentcore/voice-agent/{env_name}/{agent_name}-image-tag"
+            )
+            image_tag = image_tag_param.string_value or self.node.try_get_context("image_tag") or "latest"
+            
+            # Get ECR repository for this agent
+            if agent_name not in ecr_repos:
+                raise ValueError(f"ECR repository for {agent_name} not found in base_stack.ecr_repos")
+            
+            agent_ecr_repo = ecr_repos[agent_name]
+            repo_uri_clean = agent_ecr_repo.repository_uri.replace("https://", "").replace("http://", "")
+            image_uri = f"{repo_uri_clean}:{image_tag}"
             
             # Create IAM role for this agent
             agent_role = iam.Role(
@@ -187,10 +204,24 @@ class MultiAgentStack(Stack):
             )
 
         # Deploy orchestrator (depends on specialist agents)
-        orchestrator_runtime_name = f"orchestrator-agent-{self.node.try_get_context('environment') or 'dev'}"
-        image_tag = self.node.try_get_context("image_tag") or "latest"
-        repo_uri_clean = ecr_repo.repository_uri.replace("https://", "").replace("http://", "")
-        orchestrator_image_uri = f"{repo_uri_clean}:orchestrator-{image_tag}"
+        orchestrator_runtime_name = f"orchestrator-agent-{env_name}"
+        
+        # Get orchestrator image tag from SSM Parameter Store
+        # Parameter is created in base stack, reference it here
+        orchestrator_image_tag_param = ssm.StringParameter.from_string_parameter_name(
+            self,
+            "OrchestratorImageTagParam",
+            string_parameter_name=f"/agentcore/voice-agent/{env_name}/orchestrator-image-tag"
+        )
+        orchestrator_image_tag = orchestrator_image_tag_param.string_value or self.node.try_get_context("image_tag") or "latest"
+        
+        # Get orchestrator ECR repository
+        if "orchestrator" not in ecr_repos:
+            raise ValueError("ECR repository for orchestrator not found in base_stack.ecr_repos")
+        
+        orchestrator_ecr_repo = ecr_repos["orchestrator"]
+        repo_uri_clean = orchestrator_ecr_repo.repository_uri.replace("https://", "").replace("http://", "")
+        orchestrator_image_uri = f"{repo_uri_clean}:{orchestrator_image_tag}"
 
         # Create IAM role for orchestrator (can invoke other agents)
         orchestrator_role = iam.Role(

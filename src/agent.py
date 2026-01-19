@@ -1,18 +1,39 @@
 """
 AgentCore Bi-Directional Streaming Voice Agent
-Main application with WebSocket endpoint for real-time voice conversations
+
+This module implements a FastAPI-based voice agent application that provides
+bi-directional streaming voice conversations using Amazon Nova Sonic. The agent
+supports real-time audio input/output through WebSocket connections, text-based
+interactions, and integrates with memory and authentication systems.
+
+Architecture:
+    - WebSocket endpoint (/ws) for real-time voice streaming
+    - REST API endpoints for session management, memory operations, and authentication
+    - Integration with Strands BidiAgent for bi-directional streaming
+    - Optional memory persistence using AgentCore Memory
+    - Optional OAuth2 authentication via Google
+
+Key Components:
+    - WebSocketInput: Handles incoming WebSocket messages (audio/text)
+    - WebSocketOutput: Handles outgoing WebSocket messages (audio/transcripts/events)
+    - Memory integration for session continuity and context
+    - Tool integration (calculator, weather, database)
 """
 
 import os
 import asyncio
 import logging
 from pathlib import Path
-from typing import AsyncIterator, Dict, Any, Awaitable, Optional
-from concurrent.futures._base import InvalidStateError
+from typing import AsyncIterator, Dict, Any, Awaitable, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from strands.experimental.bidi.agent import BidiAgent
+from concurrent.futures import InvalidStateError
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Depends, HTTPException, status
 from fastapi.responses import JSONResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+# Vision routes are handled by the orchestrator agent, not the voice agent
 from strands.experimental.bidi.agent import BidiAgent
 from strands.experimental.bidi.models.nova_sonic import BidiNovaSonicModel
 from strands.experimental.bidi.types.io import BidiInput, BidiOutput
@@ -78,8 +99,28 @@ logging.getLogger('awscrt').setLevel(logging.WARNING)
 logging.getLogger('concurrent.futures').setLevel(logging.WARNING)
 
 # Custom exception handler to suppress AWS CRT cleanup errors from background tasks
-def suppress_awscrt_cleanup_error(exc_type, exc_value, exc_traceback):
-    """Suppress harmless AWS CRT cleanup errors that occur during WebSocket cleanup."""
+def suppress_awscrt_cleanup_error(
+    exc_type: type[BaseException],
+    exc_value: BaseException,
+    exc_traceback: Any
+) -> None:
+    """
+    Suppress harmless AWS CRT cleanup errors that occur during WebSocket cleanup.
+    
+    This custom exception handler filters out InvalidStateError exceptions that
+    contain "CANCELLED" in their message, as these are harmless race conditions
+    that occur during WebSocket connection cleanup. All other exceptions are
+    passed through to the default exception handler.
+    
+    Args:
+        exc_type: The exception type.
+        exc_value: The exception instance.
+        exc_traceback: The traceback object.
+    
+    Returns:
+        None. Suppresses the exception if it's a harmless cleanup error,
+        otherwise calls the default exception handler.
+    """
     if exc_type == InvalidStateError:
         error_str = str(exc_value)
         if "CANCELLED" in error_str or "cancelled" in error_str.lower():
@@ -131,6 +172,217 @@ INPUT_SAMPLE_RATE = int(config.get_config_value("INPUT_SAMPLE_RATE", "16000"))
 OUTPUT_SAMPLE_RATE = int(config.get_config_value("OUTPUT_SAMPLE_RATE", "24000"))
 MEMORY_ENABLED = config.get_config_value("MEMORY_ENABLED", "false").lower() == "true"
 
+# Audio configuration constants
+VALID_SAMPLE_RATES = [16000, 24000, 48000]  # Valid sample rates for Nova Sonic
+VALID_AUDIO_FORMATS = ["pcm", "wav"]  # Valid audio formats supported by Nova Sonic
+
+
+def serialize_record(record: Dict[str, Any] | Any) -> Dict[str, Any] | str:
+    """
+    Convert datetime objects in record to strings for JSON serialization.
+    
+    Recursively processes dictionaries, lists, and objects to convert datetime
+    objects to ISO format strings. Handles nested structures and object-like
+    records that can be converted to dictionaries.
+    
+    Args:
+        record: Dictionary, object, or other value to serialize. If it's an object
+                with __dict__, it will be converted to a dict first.
+    
+    Returns:
+        Serialized dictionary with datetime objects converted to ISO format strings,
+        or a string representation if the record cannot be serialized as a dict.
+    """
+    from datetime import datetime
+    
+    if not isinstance(record, dict):
+        # If it's not a dict, try to convert it
+        if hasattr(record, '__dict__'):
+            record = record.__dict__
+        else:
+            return str(record)
+    
+    serialized = {}
+    for key, value in record.items():
+        if isinstance(value, datetime):
+            serialized[key] = value.isoformat()
+        elif isinstance(value, dict):
+            serialized[key] = serialize_record(value)
+        elif isinstance(value, list):
+            serialized[key] = [
+                serialize_record(item) if isinstance(item, dict) else 
+                (item.isoformat() if isinstance(item, datetime) else item)
+                for item in value
+            ]
+        else:
+            serialized[key] = value
+    return serialized
+
+
+def _get_api_info() -> Dict[str, Any]:
+    """
+    Get API information dictionary.
+    
+    Returns:
+        Dictionary containing service information, endpoints, and configuration.
+    """
+    return {
+        "service": "AgentCore Voice Agent",
+        "description": "Bi-directional streaming voice agent with Amazon Nova Sonic",
+        "endpoints": {
+            "websocket": "/ws",
+            "health": "/ping",
+            "auth": {
+                "login": "/api/auth/login",
+                "callback": "/api/auth/callback",
+                "me": "/api/auth/me",
+                "logout": "/api/auth/logout"
+            },
+            "memory": {
+                "query": "/api/memory/query",
+                "sessions": "/api/memory/sessions",
+                "preferences": "/api/memory/preferences"
+            }
+        },
+        "model": MODEL_ID,
+        "region": AWS_REGION,
+        "memory_enabled": MEMORY_ENABLED,
+        "auth_enabled": oauth2_handler is not None
+    }
+
+
+def _sanitize_actor_id(actor_id: str) -> str:
+    """
+    Sanitize actor ID for use in namespace paths.
+    
+    Replaces special characters (@ and .) with underscores and ensures
+    the ID starts with an alphanumeric character for compatibility with
+    namespace requirements.
+    
+    Args:
+        actor_id: The original actor ID (typically an email address).
+    
+    Returns:
+        Sanitized actor ID safe for use in namespace paths.
+    """
+    sanitized = actor_id.replace("@", "_").replace(".", "_")
+    if not sanitized[0].isalnum():
+        sanitized = "user_" + sanitized
+    return sanitized
+
+
+async def _run_agent(
+    agent: Any,  # BidiAgent - using Any to avoid forward reference issues
+    ws_input: Any,  # WebSocketInput - defined later in file
+    ws_output: Any  # WebSocketOutput - defined later in file
+) -> None:
+    """
+    Run the agent with WebSocket input and output handlers.
+    
+    Handles the agent execution loop and gracefully handles various termination
+    conditions including normal disconnects, AWS CRT cleanup errors, and Nova Sonic
+    timeout errors.
+    
+    Args:
+        agent: The BidiAgent instance to run.
+        ws_input: WebSocketInput handler for receiving events.
+        ws_output: WebSocketOutput handler for sending events.
+    
+    Raises:
+        InvalidStateError: If an unexpected InvalidStateError occurs (non-cleanup errors).
+        Exception: If an unexpected error occurs during agent execution.
+    """
+    try:
+        await agent.run(
+            inputs=[ws_input],
+            outputs=[ws_output]
+        )
+        logger.debug("agent.run() completed normally")
+    except (StopAsyncIteration, WebSocketDisconnect):
+        # Normal termination - client disconnected
+        logger.debug("Agent session ended (client disconnected)")
+        return
+    except InvalidStateError as e:
+        # Suppress AWS CRT cleanup errors (harmless cancellation errors during WebSocket cleanup)
+        if "CANCELLED" in str(e) or "cancelled" in str(e).lower():
+            logger.debug(f"AWS CRT cleanup error (harmless): {e}")
+            return
+        else:
+            logger.error(f"InvalidStateError inside agent.run(): {e}", exc_info=True)
+            raise
+    except Exception as e:
+        # Check if it's a timeout error from Nova Sonic (expected when no audio input)
+        error_str = str(e)
+        if "Timed out waiting for audio bytes" in error_str:
+            logger.info("Nova Sonic timeout (expected when no audio input) - ending session gracefully")
+            return
+        logger.error(f"Error inside agent.run(): {e}", exc_info=True)
+        raise
+
+
+def _check_namespace(
+    bedrock_client: Any,
+    memory_id: str,
+    namespace: str,
+    max_records_to_serialize: int = 3
+) -> Dict[str, Any]:
+    """
+    Check a namespace for memory records and return diagnostic information.
+    
+    Args:
+        bedrock_client: Boto3 Bedrock AgentCore client instance.
+        memory_id: The memory ID to query.
+        namespace: The namespace path to check.
+        max_records_to_serialize: Maximum number of records to include in serialized output.
+    
+    Returns:
+        Dictionary containing namespace check results with keys:
+        - namespace: The namespace that was checked
+        - success: Boolean indicating if the check succeeded
+        - record_count: Number of records found (if successful)
+        - records: List of serialized records (if successful, limited to max_records_to_serialize)
+        - error: Error message (if failed)
+        - error_code: AWS error code (if failed, ClientError only)
+    """
+    from botocore.exceptions import ClientError
+    
+    try:
+        response = bedrock_client.list_memory_records(
+            memoryId=memory_id,
+            namespace=namespace,
+            maxResults=10
+        )
+        records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
+        for record in records:
+            if isinstance(record, dict) and 'namespace' not in record:
+                record['namespace'] = namespace
+        
+        # Serialize records to handle datetime objects
+        serialized_records = [serialize_record(r) for r in records[:max_records_to_serialize]] if records else []
+        
+        return {
+            "namespace": namespace,
+            "record_count": len(records),
+            "records": serialized_records,
+            "success": True
+        }
+    except ClientError as e:
+        error_code = e.response.get('Error', {}).get('Code', '')
+        error_msg = e.response.get('Error', {}).get('Message', '')
+        return {
+            "namespace": namespace,
+            "error": error_msg,
+            "error_code": error_code,
+            "success": False
+        }
+    except Exception as e:
+        return {
+            "namespace": namespace,
+            "error": str(e),
+            "success": False
+        }
+
+
 # Initialize memory client if enabled
 memory_client: Optional[MemoryClient] = None
 if MEMORY_ENABLED:
@@ -161,7 +413,16 @@ SYSTEM_PROMPT = config.get_config_value(
 
 
 def create_nova_sonic_model() -> BidiNovaSonicModel:
-    """Create and configure Nova Sonic model for bi-directional streaming."""
+    """
+    Create and configure Nova Sonic model for bi-directional streaming.
+    
+    Initializes a BidiNovaSonicModel instance with configuration from environment
+    variables or defaults. Configures audio settings including sample rates and
+    voice selection.
+    
+    Returns:
+        Configured BidiNovaSonicModel instance ready for use with BidiAgent.
+    """
     return BidiNovaSonicModel(
         region=AWS_REGION,
         model_id=MODEL_ID,
@@ -176,7 +437,20 @@ def create_nova_sonic_model() -> BidiNovaSonicModel:
 
 
 def create_agent(model: BidiNovaSonicModel, system_prompt: Optional[str] = None) -> BidiAgent:
-    """Create Strands BidiAgent with tools and system prompt."""
+    """
+    Create Strands BidiAgent with tools and system prompt.
+    
+    Initializes a BidiAgent instance with the provided model, configured tools
+    (calculator, weather, database), and system prompt. If no system prompt is
+    provided, uses the default SYSTEM_PROMPT.
+    
+    Args:
+        model: The BidiNovaSonicModel instance to use for the agent.
+        system_prompt: Optional custom system prompt. If None, uses SYSTEM_PROMPT.
+    
+    Returns:
+        Configured BidiAgent instance ready for bi-directional streaming.
+    """
     prompt = system_prompt or SYSTEM_PROMPT
     return BidiAgent(
         model=model,
@@ -190,10 +464,26 @@ class WebSocketOutput:
     BidiOutput implementation that sends events to a WebSocket connection.
     
     Implements the BidiOutput protocol to convert agent output events
-    into WebSocket messages that the client can process.
+    into WebSocket messages that the client can process. Handles various
+    event types including audio streams, transcripts, tool usage, and
+    connection lifecycle events. Optionally integrates with memory session
+    management to store conversation history.
+    
+    The class processes events from the BidiAgent and formats them as JSON
+    messages sent over the WebSocket connection. It also handles graceful
+    shutdown and error conditions.
     """
     
     def __init__(self, websocket: WebSocket, session_manager: Optional[MemorySessionManager] = None):
+        """
+        Initialize WebSocketOutput handler.
+        
+        Args:
+            websocket: The WebSocket connection to send events to.
+            session_manager: Optional memory session manager for storing
+                           conversation history. If provided, transcripts
+                           and tool usage will be stored in memory.
+        """
         self.websocket = websocket
         self.session_manager = session_manager
         self._stopped = False
@@ -201,12 +491,26 @@ class WebSocketOutput:
         self._current_transcript = ""
     
     async def start(self, agent: BidiAgent) -> None:
-        """Start the output handler."""
+        """
+        Start the output handler.
+        
+        Resets internal state to prepare for processing output events.
+        Should be called before the agent starts running.
+        
+        Args:
+            agent: The BidiAgent instance (unused but required by protocol).
+        """
         self._stopped = False
         self._event_count = 0
     
     async def stop(self) -> None:
-        """Stop the output handler."""
+        """
+        Stop the output handler.
+        
+        Signals that the handler should stop processing events. After
+        calling this, the __call__ method will return early without
+        processing events.
+        """
         self._stopped = True
     
     async def __call__(self, event) -> None:
@@ -335,10 +639,26 @@ class WebSocketInput:
     BidiInput implementation that reads from a WebSocket connection.
     
     Implements the BidiInput protocol to convert WebSocket messages
-    into BidiInputEvent objects that the agent can process.
+    into BidiInputEvent objects that the agent can process. Supports
+    both audio and text input modes, with validation and error handling
+    for audio format and sample rate requirements. Optionally integrates
+    with memory session management to store user inputs.
+    
+    The class reads JSON messages from the WebSocket, validates audio
+    format and sample rate constraints, and converts them to appropriate
+    BidiInputEvent instances for the agent to process.
     """
     
     def __init__(self, websocket: WebSocket, session_manager: Optional[MemorySessionManager] = None):
+        """
+        Initialize WebSocketInput handler.
+        
+        Args:
+            websocket: The WebSocket connection to read events from.
+            session_manager: Optional memory session manager for storing
+                           user inputs. If provided, text inputs will be
+                           stored in memory.
+        """
         self.websocket = websocket
         self.session_manager = session_manager
         self._stopped = False
@@ -346,11 +666,24 @@ class WebSocketInput:
         self._text_pending = False    # Flag for pending text input
     
     async def start(self, agent: BidiAgent) -> None:
-        """Start the input source."""
+        """
+        Start the input source.
+        
+        Resets internal state to prepare for reading input events.
+        Should be called before the agent starts running.
+        
+        Args:
+            agent: The BidiAgent instance (unused but required by protocol).
+        """
         self._stopped = False
     
     async def stop(self) -> None:
-        """Stop the input source."""
+        """
+        Stop the input source.
+        
+        Signals that the handler should stop reading events. After
+        calling this, _read_next will raise StopAsyncIteration.
+        """
         self._stopped = True
     
     def __call__(self) -> Awaitable[BidiTextInputEvent | BidiAudioInputEvent]:
@@ -363,7 +696,21 @@ class WebSocketInput:
         return self._read_next()
     
     async def _read_next(self) -> BidiTextInputEvent | BidiAudioInputEvent:
-        """Read the next event from the WebSocket."""
+        """
+        Read the next event from the WebSocket.
+        
+        Receives JSON data from the WebSocket connection and converts it
+        to an appropriate BidiInputEvent. Supports both audio and text input
+        formats. Validates audio format and sample rate, and handles errors
+        gracefully.
+        
+        Returns:
+            BidiTextInputEvent or BidiAudioInputEvent based on the received data.
+        
+        Raises:
+            StopAsyncIteration: If the WebSocket is disconnected or stopped.
+            Exception: If an error occurs while reading from the WebSocket.
+        """
         if self._stopped:
             raise StopAsyncIteration
         
@@ -378,15 +725,20 @@ class WebSocketInput:
                 audio_data = data["audio"]
                 sample_rate = data.get("sample_rate", INPUT_SAMPLE_RATE)
                 # Ensure sample_rate is one of the valid values
-                if sample_rate not in [16000, 24000, 48000]:
+                if sample_rate not in VALID_SAMPLE_RATES:
                     sample_rate = 16000  # Default to 16000 if invalid
                 
                 format_type = data.get("format", "pcm")  # Default to PCM (required by Nova Sonic)
                 # Nova Sonic requires Linear PCM format
-                if format_type not in ["pcm", "wav"]:
-                    logger.error(f"Received {format_type} format - Nova Sonic requires PCM format!")
-                    logger.error("Please convert audio to PCM on the client side before sending")
+                if format_type not in VALID_AUDIO_FORMATS:
+                    error_msg = (
+                        f"Invalid audio format '{format_type}'. "
+                        f"Supported formats: {', '.join(VALID_AUDIO_FORMATS)}. "
+                        "Please convert audio to PCM on the client side before sending."
+                    )
+                    logger.warning(f"[AUDIO INPUT] {error_msg}")
                     # Skip this invalid chunk and read the next message
+                    # Note: We can't send error back through input handler, so we log and continue
                     return await self._read_next()
                 
                 logger.debug(f"[AUDIO INPUT] Received audio chunk: {len(audio_data)} chars, format={format_type}, sample_rate={sample_rate}")
@@ -426,9 +778,15 @@ class WebSocketInput:
                     logger.error(f"[TEXT INPUT] Failed to create BidiTextInputEvent: {e}", exc_info=True)
                     raise
             else:
-                logger.warning(f"Received unknown data format: {data.keys()}")
+                # Unknown data format - log details and attempt to handle as text
+                received_keys = list(data.keys()) if isinstance(data, dict) else "non-dict"
+                logger.warning(
+                    f"[INPUT] Received unknown data format with keys: {received_keys}. "
+                    "Attempting to process as text input."
+                )
                 # Default to text if format is unknown
-                return BidiTextInputEvent(text=str(data))
+                text_content = str(data) if not isinstance(data, dict) else data.get("text", str(data))
+                return BidiTextInputEvent(text=text_content)
                 
         except WebSocketDisconnect:
             # Normal disconnect - signal end of input
@@ -523,36 +881,7 @@ async def websocket_endpoint(websocket: WebSocket):
         
         try:
             # Start the agent - this will block until the connection ends
-            async def run_agent():
-                try:
-                    await agent.run(
-                        inputs=[ws_input],
-                        outputs=[ws_output]
-                    )
-                    logger.debug("agent.run() completed normally")
-                except (StopAsyncIteration, WebSocketDisconnect):
-                    # Normal termination - client disconnected
-                    logger.debug("Agent session ended (client disconnected)")
-                    return
-                except InvalidStateError as e:
-                    # Suppress AWS CRT cleanup errors (harmless cancellation errors during WebSocket cleanup)
-                    if "CANCELLED" in str(e) or "cancelled" in str(e).lower():
-                        logger.debug(f"AWS CRT cleanup error (harmless): {e}")
-                        return
-                    else:
-                        logger.error(f"InvalidStateError inside agent.run(): {e}", exc_info=True)
-                        raise
-                except Exception as e:
-                    # Check if it's a timeout error from Nova Sonic (expected when no audio input)
-                    error_str = str(e)
-                    if "Timed out waiting for audio bytes" in error_str:
-                        logger.info("Nova Sonic timeout (expected when no audio input) - ending session gracefully")
-                        return
-                    logger.error(f"Error inside agent.run(): {e}", exc_info=True)
-                    raise
-            
-            # Run the agent
-            await run_agent()
+            await _run_agent(agent, ws_input, ws_output)
             
         except (StopAsyncIteration, WebSocketDisconnect):
             # Normal termination - already handled in run_agent
@@ -616,18 +945,23 @@ async def health() -> Dict[str, str]:
     Health check endpoint for load balancers and monitoring.
     
     Returns:
-        Dict containing service status and name.
+        Dictionary with keys:
+        - status: Always "healthy"
+        - service: Service name "voice"
     """
     return {"status": "healthy", "service": "voice"}
 
 
 @app.get("/ping")
-async def health_check():
+async def health_check() -> JSONResponse:
     """
     Health check endpoint required by AgentCore Runtime.
     
     Returns:
-        JSON response indicating service health
+        JSONResponse containing:
+        - status: "healthy"
+        - service: "agentcore-voice-agent"
+        - version: "1.0.0"
     """
     return JSONResponse(
         content={
@@ -636,6 +970,9 @@ async def health_check():
             "version": "1.0.0"
         }
     )
+
+
+# Vision routes are handled by the orchestrator agent (port 9000), not the voice agent
 
 
 @app.post("/api/sessions")
@@ -687,8 +1024,23 @@ async def create_session(
 
 # Authentication endpoints
 @app.get("/api/auth/login")
-async def login(request: Request):
-    """Initiate Google OAuth2 login."""
+async def login(request: Request) -> RedirectResponse:
+    """
+    Initiate Google OAuth2 login.
+    
+    Redirects the user to Google's OAuth2 authorization page. If a state
+    parameter is provided in the query string, it will be preserved through
+    the OAuth flow.
+    
+    Args:
+        request: FastAPI request object. May contain optional "state" query parameter.
+    
+    Returns:
+        RedirectResponse to Google OAuth2 authorization URL.
+    
+    Raises:
+        HTTPException: 503 if OAuth2 is not configured.
+    """
     if not oauth2_handler:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -701,8 +1053,25 @@ async def login(request: Request):
 
 
 @app.get("/api/auth/callback")
-async def auth_callback(request: Request, code: str, state: Optional[str] = None):
-    """Handle OAuth2 callback."""
+async def auth_callback(request: Request, code: str, state: Optional[str] = None) -> RedirectResponse:
+    """
+    Handle OAuth2 callback from Google.
+    
+    Processes the authorization code returned by Google after user
+    authentication and exchanges it for an access token. Redirects
+    the user back to the frontend with the token in the query string.
+    
+    Args:
+        request: FastAPI request object.
+        code: Authorization code from Google OAuth2 callback.
+        state: Optional state parameter for CSRF protection.
+    
+    Returns:
+        RedirectResponse to frontend with token in query string.
+    
+    Raises:
+        HTTPException: 503 if OAuth2 is not configured, 401 if callback fails.
+    """
     if not oauth2_handler:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -724,14 +1093,37 @@ async def auth_callback(request: Request, code: str, state: Optional[str] = None
 
 
 @app.get("/api/auth/me")
-async def get_me(request: Request, user: Dict[str, Any] = Depends(get_current_user)):
-    """Get current user information."""
+async def get_me(
+    request: Request,
+    user: Dict[str, Any] = Depends(get_current_user)
+) -> JSONResponse:
+    """
+    Get current authenticated user information.
+    
+    Returns the user information extracted from the authentication token.
+    Requires valid authentication via OAuth2.
+    
+    Args:
+        request: FastAPI request object.
+        user: Authenticated user information from OAuth2 middleware.
+    
+    Returns:
+        JSONResponse containing user information dictionary.
+    """
     return JSONResponse(content=user)
 
 
 @app.post("/api/auth/logout")
-async def logout():
-    """Logout endpoint (client should clear token)."""
+async def logout() -> JSONResponse:
+    """
+    Logout endpoint.
+    
+    Note: This endpoint does not invalidate server-side tokens. The client
+    should clear the token from local storage or cookies.
+    
+    Returns:
+        JSONResponse with logout confirmation message.
+    """
     return JSONResponse(content={"message": "Logged out"})
 
 
@@ -741,8 +1133,29 @@ async def query_memories(
     request: Request,
     query: Dict[str, Any],
     user: Dict[str, Any] = Depends(get_current_user)
-):
-    """Query memories for current user."""
+) -> JSONResponse:
+    """
+    Query memories for current user.
+    
+    Searches the user's memory records using semantic search or namespace
+    filtering. Supports querying summaries, preferences, and semantic memories.
+    
+    Args:
+        request: FastAPI request object.
+        query: Dictionary containing:
+            - query: Optional search query text for semantic search
+            - namespace: Optional namespace prefix to filter by
+            - memory_type: Optional type filter ("summaries", "preferences", "semantic")
+            - top_k: Optional number of results to return (default: 5)
+        user: Authenticated user information from OAuth2 middleware.
+    
+    Returns:
+        JSONResponse containing:
+        - memories: List of memory records with content and namespace
+    
+    Raises:
+        HTTPException: 503 if memory is not enabled.
+    """
     if not memory_client:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -795,8 +1208,25 @@ async def query_memories(
 
 
 @app.get("/api/memory/sessions")
-async def list_sessions(user: Dict[str, Any] = Depends(get_current_user)):
-    """List user's sessions."""
+async def list_sessions(
+    user: Dict[str, Any] = Depends(get_current_user)
+) -> JSONResponse:
+    """
+    List user's memory sessions.
+    
+    Retrieves all memory sessions for the authenticated user, including
+    session IDs and summaries.
+    
+    Args:
+        user: Authenticated user information from OAuth2 middleware.
+    
+    Returns:
+        JSONResponse containing:
+        - sessions: List of session dictionaries with session_id and summary
+    
+    Raises:
+        HTTPException: 503 if memory is not enabled.
+    """
     if not memory_client:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -824,40 +1254,36 @@ async def list_sessions(user: Dict[str, Any] = Depends(get_current_user)):
 
 
 @app.get("/api/memory/sessions/{session_id}")
-async def get_session(session_id: str, user: Dict[str, Any] = Depends(get_current_user)):
-    """Get session details and summary."""
+async def get_session(
+    session_id: str,
+    user: Dict[str, Any] = Depends(get_current_user)
+) -> JSONResponse:
+    """
+    Get session details and summary.
+    
+    Retrieves detailed information about a specific memory session, including
+    the session summary and full record data.
+    
+    Args:
+        session_id: The session ID to retrieve.
+        user: Authenticated user information from OAuth2 middleware.
+    
+    Returns:
+        JSONResponse containing:
+        - session_id: The session ID
+        - namespace: The session namespace
+        - summary: The session summary text
+        - full_record: The complete serialized session record
+    
+    Raises:
+        HTTPException: 503 if memory is not enabled, 404 if session not found.
+    """
     if not memory_client:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Memory not enabled"
         )
     
-    from datetime import datetime
-    
-    def serialize_record(record):
-        """Convert datetime objects in record to strings for JSON serialization."""
-        if not isinstance(record, dict):
-            # If it's not a dict, try to convert it
-            if hasattr(record, '__dict__'):
-                record = record.__dict__
-            else:
-                return str(record)
-        
-        serialized = {}
-        for key, value in record.items():
-            if isinstance(value, datetime):
-                serialized[key] = value.isoformat()
-            elif isinstance(value, dict):
-                serialized[key] = serialize_record(value)
-            elif isinstance(value, list):
-                serialized[key] = [
-                    serialize_record(item) if isinstance(item, dict) else 
-                    (item.isoformat() if isinstance(item, datetime) else item)
-                    for item in value
-                ]
-            else:
-                serialized[key] = value
-        return serialized
     
     actor_id = user.get("email")
     summary_record = memory_client.get_session_summary(actor_id=actor_id, session_id=session_id)
@@ -904,15 +1330,34 @@ async def get_session(session_id: str, user: Dict[str, Any] = Depends(get_curren
 
 
 @app.delete("/api/memory/sessions/{session_id}")
-async def delete_session(session_id: str, user: Dict[str, Any] = Depends(get_current_user)):
+async def delete_session(
+    session_id: str,
+    user: Dict[str, Any] = Depends(get_current_user)
+) -> JSONResponse:
     """Delete a session's memories."""
     # This would require additional implementation
     return JSONResponse(content={"message": "Session deleted"})
 
 
 @app.get("/api/memory/preferences")
-async def get_preferences(user: Dict[str, Any] = Depends(get_current_user)):
-    """Get user preferences."""
+async def get_preferences(
+    user: Dict[str, Any] = Depends(get_current_user)
+) -> JSONResponse:
+    """
+    Get user preferences from memory.
+    
+    Retrieves all preference records stored in memory for the authenticated user.
+    
+    Args:
+        user: Authenticated user information from OAuth2 middleware.
+    
+    Returns:
+        JSONResponse containing:
+        - preferences: List of preference records with content and namespace
+    
+    Raises:
+        HTTPException: 503 if memory is not enabled.
+    """
     if not memory_client:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -960,8 +1405,33 @@ async def diagnose_memory(
     request: Request,
     query: Dict[str, Any],
     user: Dict[str, Any] = Depends(get_current_user)
-):
-    """Run comprehensive memory diagnostics."""
+) -> JSONResponse:
+    """
+    Run comprehensive memory diagnostics.
+    
+    Performs diagnostic checks on various memory namespaces to help debug
+    memory-related issues. Checks parent namespace, exact session namespace
+    (if provided), semantic namespace, and preferences namespace.
+    
+    Args:
+        request: FastAPI request object.
+        query: Dictionary containing:
+            - session_id: Optional session ID for exact namespace check
+        user: Authenticated user information from OAuth2 middleware.
+    
+    Returns:
+        JSONResponse containing diagnostic information:
+        - user_id: Original user ID
+        - sanitized_user_id: Sanitized user ID used in namespaces
+        - session_id: Session ID if provided
+        - memory_id: Memory resource ID
+        - region: AWS region
+        - checks: Dictionary of namespace check results
+        - total_records: Total number of records found across all namespaces
+    
+    Raises:
+        HTTPException: 503 if memory is not enabled.
+    """
     if not memory_client:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -970,32 +1440,12 @@ async def diagnose_memory(
     
     import boto3
     from botocore.exceptions import ClientError
-    from datetime import datetime
-    
-    def serialize_record(record):
-        """Convert datetime objects in record to strings for JSON serialization."""
-        if not isinstance(record, dict):
-            return record
-        
-        serialized = {}
-        for key, value in record.items():
-            if isinstance(value, datetime):
-                serialized[key] = value.isoformat()
-            elif isinstance(value, dict):
-                serialized[key] = serialize_record(value)
-            elif isinstance(value, list):
-                serialized[key] = [serialize_record(item) if isinstance(item, dict) else item for item in value]
-            else:
-                serialized[key] = value
-        return serialized
     
     actor_id = user.get("email")
     session_id = query.get("session_id")
     
     # Sanitize actor_id
-    sanitized_actor_id = actor_id.replace("@", "_").replace(".", "_")
-    if not sanitized_actor_id[0].isalnum():
-        sanitized_actor_id = "user_" + sanitized_actor_id
+    sanitized_actor_id = _sanitize_actor_id(actor_id)
     
     diagnostics = {
         "user_id": actor_id,
@@ -1010,156 +1460,28 @@ async def diagnose_memory(
     
     # Check 1: Parent namespace (summaries/{actorId})
     parent_ns = f"/summaries/{sanitized_actor_id}"
-    try:
-        response = bedrock_client.list_memory_records(
-            memoryId=memory_client.memory_id,
-            namespace=parent_ns,
-            maxResults=10
-        )
-        records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
-        for record in records:
-            if isinstance(record, dict) and 'namespace' not in record:
-                record['namespace'] = parent_ns
-        
-        # Serialize records to handle datetime objects
-        serialized_records = [serialize_record(r) for r in records[:3]] if records else []
-        
-        diagnostics["checks"]["parent_namespace"] = {
-            "namespace": parent_ns,
-            "record_count": len(records),
-            "records": serialized_records,
-            "success": True
-        }
-    except ClientError as e:
-        error_code = e.response.get('Error', {}).get('Code', '')
-        error_msg = e.response.get('Error', {}).get('Message', '')
-        diagnostics["checks"]["parent_namespace"] = {
-            "namespace": parent_ns,
-            "error": error_msg,
-            "error_code": error_code,
-            "success": False
-        }
-    except Exception as e:
-        diagnostics["checks"]["parent_namespace"] = {
-            "namespace": parent_ns,
-            "error": str(e),
-            "success": False
-        }
+    diagnostics["checks"]["parent_namespace"] = _check_namespace(
+        bedrock_client, memory_client.memory_id, parent_ns
+    )
     
     # Check 2: Exact session namespace (if session_id provided)
     if session_id:
         exact_ns = f"/summaries/{sanitized_actor_id}/{session_id}"
-        try:
-            response = bedrock_client.list_memory_records(
-                memoryId=memory_client.memory_id,
-                namespace=exact_ns,
-                maxResults=10
-            )
-            records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
-            for record in records:
-                if isinstance(record, dict) and 'namespace' not in record:
-                    record['namespace'] = exact_ns
-            
-            # Serialize records to handle datetime objects
-            serialized_records = [serialize_record(r) for r in records]
-            
-            diagnostics["checks"]["exact_namespace"] = {
-                "namespace": exact_ns,
-                "record_count": len(records),
-                "records": serialized_records,
-                "success": True
-            }
-        except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', '')
-            error_msg = e.response.get('Error', {}).get('Message', '')
-            diagnostics["checks"]["exact_namespace"] = {
-                "namespace": exact_ns,
-                "error": error_msg,
-                "error_code": error_code,
-                "success": False
-            }
-        except Exception as e:
-            diagnostics["checks"]["exact_namespace"] = {
-                "namespace": exact_ns,
-                "error": str(e),
-                "success": False
-            }
+        diagnostics["checks"]["exact_namespace"] = _check_namespace(
+            bedrock_client, memory_client.memory_id, exact_ns, max_records_to_serialize=10
+        )
     
     # Check 3: Semantic namespace
     semantic_ns = f"/semantic/{sanitized_actor_id}"
-    try:
-        response = bedrock_client.list_memory_records(
-            memoryId=memory_client.memory_id,
-            namespace=semantic_ns,
-            maxResults=10
-        )
-        records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
-        for record in records:
-            if isinstance(record, dict) and 'namespace' not in record:
-                record['namespace'] = semantic_ns
-        
-        # Serialize records to handle datetime objects
-        serialized_records = [serialize_record(r) for r in records[:3]] if records else []
-        
-        diagnostics["checks"]["semantic_namespace"] = {
-            "namespace": semantic_ns,
-            "record_count": len(records),
-            "records": serialized_records,
-            "success": True
-        }
-    except ClientError as e:
-        error_code = e.response.get('Error', {}).get('Code', '')
-        error_msg = e.response.get('Error', {}).get('Message', '')
-        diagnostics["checks"]["semantic_namespace"] = {
-            "namespace": semantic_ns,
-            "error": error_msg,
-            "error_code": error_code,
-            "success": False
-        }
-    except Exception as e:
-        diagnostics["checks"]["semantic_namespace"] = {
-            "namespace": semantic_ns,
-            "error": str(e),
-            "success": False
-        }
+    diagnostics["checks"]["semantic_namespace"] = _check_namespace(
+        bedrock_client, memory_client.memory_id, semantic_ns
+    )
     
     # Check 4: Preferences namespace
     prefs_ns = f"/preferences/{sanitized_actor_id}"
-    try:
-        response = bedrock_client.list_memory_records(
-            memoryId=memory_client.memory_id,
-            namespace=prefs_ns,
-            maxResults=10
-        )
-        records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
-        for record in records:
-            if isinstance(record, dict) and 'namespace' not in record:
-                record['namespace'] = prefs_ns
-        
-        # Serialize records to handle datetime objects
-        serialized_records = [serialize_record(r) for r in records[:3]] if records else []
-        
-        diagnostics["checks"]["preferences_namespace"] = {
-            "namespace": prefs_ns,
-            "record_count": len(records),
-            "records": serialized_records,
-            "success": True
-        }
-    except ClientError as e:
-        error_code = e.response.get('Error', {}).get('Code', '')
-        error_msg = e.response.get('Error', {}).get('Message', '')
-        diagnostics["checks"]["preferences_namespace"] = {
-            "namespace": prefs_ns,
-            "error": error_msg,
-            "error_code": error_code,
-            "success": False
-        }
-    except Exception as e:
-        diagnostics["checks"]["preferences_namespace"] = {
-            "namespace": prefs_ns,
-            "error": str(e),
-            "success": False
-        }
+    diagnostics["checks"]["preferences_namespace"] = _check_namespace(
+        bedrock_client, memory_client.memory_id, prefs_ns
+    )
     
     # Calculate total records
     total_records = 0
@@ -1172,69 +1494,44 @@ async def diagnose_memory(
     return JSONResponse(content=diagnostics)
 
 
-@app.get("/")
+@app.get("/", response_model=None)
 async def root():
-    """Serve the frontend HTML file or return API information."""
+    """
+    Serve the frontend HTML file or return API information.
+    
+    If the frontend index.html file exists, serves it. Otherwise, returns
+    API information as JSON.
+    
+    Returns:
+        FileResponse if index.html exists, otherwise JSONResponse with API info.
+    """
     index_path = client_web_path / "index.html"
     if index_path.exists():
         return FileResponse(str(index_path))
     
     # Fallback to API info if frontend not found
-    return JSONResponse(
-        content={
-            "service": "AgentCore Voice Agent",
-            "description": "Bi-directional streaming voice agent with Amazon Nova Sonic",
-            "endpoints": {
-                "websocket": "/ws",
-                "health": "/ping",
-                "auth": {
-                    "login": "/api/auth/login",
-                    "callback": "/api/auth/callback",
-                    "me": "/api/auth/me",
-                    "logout": "/api/auth/logout"
-                },
-                "memory": {
-                    "query": "/api/memory/query",
-                    "sessions": "/api/memory/sessions",
-                    "preferences": "/api/memory/preferences"
-                }
-            },
-            "model": MODEL_ID,
-            "region": AWS_REGION,
-            "memory_enabled": MEMORY_ENABLED,
-            "auth_enabled": oauth2_handler is not None
-        }
-    )
+    return JSONResponse(content=_get_api_info())
 
 
 @app.get("/api")
-async def api_info():
-    """API information endpoint."""
-    return JSONResponse(
-        content={
-            "service": "AgentCore Voice Agent",
-            "description": "Bi-directional streaming voice agent with Amazon Nova Sonic",
-            "endpoints": {
-                "websocket": "/ws",
-                "health": "/ping",
-                "auth": {
-                    "login": "/api/auth/login",
-                    "callback": "/api/auth/callback",
-                    "me": "/api/auth/me",
-                    "logout": "/api/auth/logout"
-                },
-                "memory": {
-                    "query": "/api/memory/query",
-                    "sessions": "/api/memory/sessions",
-                    "preferences": "/api/memory/preferences"
-                }
-            },
-            "model": MODEL_ID,
-            "region": AWS_REGION,
-            "memory_enabled": MEMORY_ENABLED,
-            "auth_enabled": oauth2_handler is not None
-        }
-    )
+async def api_info() -> JSONResponse:
+    """
+    API information endpoint.
+    
+    Returns comprehensive information about the API including available
+    endpoints, configuration, and service status.
+    
+    Returns:
+        JSONResponse containing:
+        - service: Service name
+        - description: Service description
+        - endpoints: Dictionary of available endpoints
+        - model: Model ID in use
+        - region: AWS region
+        - memory_enabled: Whether memory is enabled
+        - auth_enabled: Whether authentication is enabled
+    """
+    return JSONResponse(content=_get_api_info())
 
 
 if __name__ == "__main__":

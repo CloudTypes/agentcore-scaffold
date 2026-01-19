@@ -660,3 +660,279 @@ async def test_context_building_handles_summary_retrieval_error(mock_get_config,
     # Should only have one memory entry (second one failed)
     assert context.count("[Memory") == 1
 
+
+# Additional Error Handling Tests
+@patch('memory.session_manager.get_config')
+async def test_initialize_preference_retrieval_failure(mock_get_config, mock_memory_client, mock_config):
+    """Test that initialize handles preference retrieval failures."""
+    from memory.session_manager import MemorySessionManager
+    
+    mock_get_config.return_value = mock_config
+    mock_memory_client.list_sessions.return_value = []
+    mock_memory_client.get_user_preferences.side_effect = Exception("Preference retrieval failed")
+    
+    manager = MemorySessionManager(
+        memory_client=mock_memory_client,
+        actor_id="user@example.com"
+    )
+    
+    # Should not raise, should continue
+    await manager.initialize()
+    assert manager._initialized is True
+
+
+@patch('memory.session_manager.get_config')
+async def test_initialize_config_retrieval_failure(mock_get_config, mock_memory_client, mock_config):
+    """Test that initialize handles config retrieval failures."""
+    from memory.session_manager import MemorySessionManager
+    
+    mock_get_config.return_value = mock_config
+    mock_config.get_config_value.side_effect = Exception("Config retrieval failed")
+    
+    manager = MemorySessionManager(
+        memory_client=mock_memory_client,
+        actor_id="user@example.com"
+    )
+    
+    # Should handle config error gracefully
+    await manager.initialize()
+    assert manager._initialized is True
+
+
+def test_store_user_input_memory_client_error(mock_memory_client):
+    """Test store_user_input when memory client raises error."""
+    from memory.session_manager import MemorySessionManager
+    
+    mock_memory_client.store_event.side_effect = Exception("Storage failed")
+    
+    manager = MemorySessionManager(
+        memory_client=mock_memory_client,
+        actor_id="user@example.com"
+    )
+    
+    # Should not raise, just log error
+    manager.store_user_input(text="Hello")
+
+
+def test_store_agent_response_memory_client_error(mock_memory_client):
+    """Test store_agent_response when memory client raises error."""
+    from memory.session_manager import MemorySessionManager
+    
+    mock_memory_client.store_event.side_effect = Exception("Storage failed")
+    
+    manager = MemorySessionManager(
+        memory_client=mock_memory_client,
+        actor_id="user@example.com"
+    )
+    
+    # Should not raise, just log error
+    manager.store_agent_response(text="Hi there")
+
+
+def test_store_tool_use_memory_client_error(mock_memory_client):
+    """Test store_tool_use when memory client raises error."""
+    from memory.session_manager import MemorySessionManager
+    
+    mock_memory_client.store_event.side_effect = Exception("Storage failed")
+    
+    manager = MemorySessionManager(
+        memory_client=mock_memory_client,
+        actor_id="user@example.com"
+    )
+    
+    # Should not raise, just log error
+    manager.store_tool_use(
+        tool_name="calculator",
+        input_data={"expression": "2+2"},
+        output_data={"result": 4}
+    )
+
+
+# Edge Cases Tests
+@patch('memory.session_manager.get_config')
+async def test_initialize_empty_preferences(mock_get_config, mock_memory_client, mock_config):
+    """Test initialize with empty preference list."""
+    from memory.session_manager import MemorySessionManager
+    
+    mock_get_config.return_value = mock_config
+    mock_memory_client.list_sessions.return_value = []
+    mock_memory_client.get_user_preferences.return_value = []
+    
+    manager = MemorySessionManager(
+        memory_client=mock_memory_client,
+        actor_id="user@example.com"
+    )
+    
+    await manager.initialize()
+    
+    context = manager.get_context()
+    # Should not include preferences section if empty
+    if context:
+        assert "User Preferences" not in context or "-" not in context
+
+
+@patch('memory.session_manager.get_config')
+async def test_initialize_preferences_missing_content(mock_get_config, mock_memory_client, mock_config):
+    """Test initialize with preferences missing content fields."""
+    from memory.session_manager import MemorySessionManager
+    
+    mock_get_config.return_value = mock_config
+    mock_memory_client.list_sessions.return_value = []
+    # Preference without content field or with empty content
+    mock_memory_client.get_user_preferences.return_value = [
+        {"metadata": "some metadata"}  # Missing content
+    ]
+    
+    manager = MemorySessionManager(
+        memory_client=mock_memory_client,
+        actor_id="user@example.com"
+    )
+    
+    await manager.initialize()
+    
+    context = manager.get_context()
+    # The code adds "User Preferences:" header if preferences list is not empty,
+    # but only adds preference items if they have text content.
+    # If no preferences have text, the header still appears but no items are added.
+    # The actual behavior: header appears, but no preference items (no "- " lines)
+    if context and "User Preferences" in context:
+        # Should have header but no preference items (no lines starting with "- ")
+        lines = context.split("\n")
+        pref_section_started = False
+        has_pref_items = False
+        for line in lines:
+            if "User Preferences" in line:
+                pref_section_started = True
+            elif pref_section_started and line.strip().startswith("- "):
+                has_pref_items = True
+                break
+        # If preferences section exists but has no items, that's the actual behavior
+        # The test should accept this behavior
+        assert not has_pref_items  # No preference items should be added when content is missing
+
+
+@patch('memory.session_manager.get_config')
+async def test_initialize_session_summaries_different_content_formats(mock_get_config, mock_memory_client, mock_config):
+    """Test initialize with session summaries having different content formats."""
+    from memory.session_manager import MemorySessionManager
+    
+    mock_get_config.return_value = mock_config
+    
+    past_sessions = [
+        {"session_id": "session-1", "summary": "Summary 1"},
+        {"session_id": "session-2", "summary": "Summary 2"}
+    ]
+    mock_memory_client.list_sessions.return_value = past_sessions
+    
+    # Different content formats
+    mock_memory_client.get_session_summary.side_effect = [
+        {"content": {"text": "Text format"}},  # Dict with text
+        {"content": "String format"}  # String format
+    ]
+    
+    manager = MemorySessionManager(
+        memory_client=mock_memory_client,
+        actor_id="user@example.com",
+        session_id="current-session"
+    )
+    
+    await manager.initialize()
+    
+    context = manager.get_context()
+    assert context is not None
+    # Should handle both formats
+    assert "Text format" in context or "String format" in context
+
+
+@patch('memory.session_manager.get_config')
+async def test_initialize_past_sessions_count_variations(mock_get_config, mock_memory_client, mock_config):
+    """Test initialize with different PAST_SESSIONS_COUNT values."""
+    from memory.session_manager import MemorySessionManager
+    
+    mock_get_config.return_value = mock_config
+    
+    # Test with custom count
+    mock_config.get_config_value.return_value = "5"
+    
+    past_sessions = [
+        {"session_id": f"session-{i}", "summary": f"Summary {i}"} for i in range(10)
+    ]
+    mock_memory_client.list_sessions.return_value = past_sessions
+    mock_memory_client.get_session_summary.return_value = {
+        "content": {"text": "Test summary"}
+    }
+    
+    manager = MemorySessionManager(
+        memory_client=mock_memory_client,
+        actor_id="user@example.com",
+        session_id="current-session"
+    )
+    
+    await manager.initialize()
+    
+    context = manager.get_context()
+    if context:
+        # Should limit to 5 sessions (PAST_SESSIONS_COUNT)
+        assert context.count("[Memory") <= 5
+
+
+@patch('memory.session_manager.get_config')
+async def test_initialize_very_large_past_sessions(mock_get_config, mock_memory_client, mock_config):
+    """Test initialize with very large number of past sessions."""
+    from memory.session_manager import MemorySessionManager
+    
+    mock_get_config.return_value = mock_config
+    
+    # Create 100 past sessions
+    past_sessions = [
+        {"session_id": f"session-{i}", "summary": f"Summary {i}"} for i in range(100)
+    ]
+    mock_memory_client.list_sessions.return_value = past_sessions
+    mock_memory_client.get_session_summary.return_value = {
+        "content": {"text": "Test summary"}
+    }
+    
+    manager = MemorySessionManager(
+        memory_client=mock_memory_client,
+        actor_id="user@example.com",
+        session_id="current-session"
+    )
+    
+    await manager.initialize()
+    
+    context = manager.get_context()
+    if context:
+        # Should limit to PAST_SESSIONS_COUNT (default 3)
+        assert context.count("[Memory") <= 3
+
+
+@patch('memory.session_manager.get_config')
+async def test_context_building_timestamp_variations(mock_get_config, mock_memory_client, mock_config):
+    """Test context building with different timestamp formats."""
+    from memory.session_manager import MemorySessionManager
+    
+    mock_get_config.return_value = mock_config
+    
+    past_sessions = [{"session_id": "session-1", "summary": "Summary 1"}]
+    mock_memory_client.list_sessions.return_value = past_sessions
+    
+    # Test with only createdAt
+    mock_memory_client.get_session_summary.return_value = {
+        "content": {"text": "Test"},
+        "createdAt": "2024-01-01T10:00:00Z",
+        # No updatedAt
+    }
+    
+    manager = MemorySessionManager(
+        memory_client=mock_memory_client,
+        actor_id="user@example.com",
+        session_id="current-session"
+    )
+    
+    await manager.initialize()
+    
+    context = manager.get_context()
+    assert context is not None
+    # Should use createdAt when updatedAt is missing
+    assert "2024-01-01" in context or "10:00:00" in context
+

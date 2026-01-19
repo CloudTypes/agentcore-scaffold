@@ -58,7 +58,7 @@ services:
       - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-${AWS_REGION:-us-west-2}}
       - AWS_PROFILE=${AWS_PROFILE:-}
-      - VISION_MODEL=${VISION_MODEL:-amazon.nova-canvas-v1:0}
+      - VISION_MODEL=${VISION_MODEL:-us.amazon.nova-pro-v1:0}
     volumes:
       # Mount AWS credentials if using AWS_PROFILE
       - ${HOME}/.aws:/root/.aws:ro

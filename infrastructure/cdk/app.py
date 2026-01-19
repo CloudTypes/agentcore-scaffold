@@ -8,6 +8,10 @@ import aws_cdk as cdk
 from agentcore_stack import AgentCoreStack
 from agentcore_runtime_stack import AgentCoreRuntimeStack
 from multi_agent_stack import MultiAgentStack
+from vision_stack import VisionInfrastructureStack
+from codebuild_stack import CodeBuildStack
+from web_client_stack import WebClientStack
+from deployment_stack import DeploymentStack
 # Memory stack removed - use scripts/manage_memory.py instead
 # from agentcore_memory_stack import AgentCoreMemoryStack
 
@@ -60,6 +64,14 @@ base_stack = AgentCoreStack(
 # This allows memory to be created with strategies via the SDK
 # See infrastructure/cdk/README.md for instructions
 
+# Create Web Client stack (S3 + CloudFront)
+web_client_stack = WebClientStack(
+    app,
+    f"AgentCoreWebClient-{env_name}",
+    env=env,
+    description=f"Web client deployment (S3 + CloudFront) ({env_name})"
+)
+
 # Create Runtime stack (depends on base stack for ECR and IAM role)
 # Note: Runtime stack requires ECR image to be pushed first
 runtime_stack = AgentCoreRuntimeStack(
@@ -67,12 +79,12 @@ runtime_stack = AgentCoreRuntimeStack(
     f"AgentCoreVoiceAgent-Runtime-{env_name}",
     env=env,
     description=f"AgentCore Runtime deployment ({env_name})",
-    ecr_repo=base_stack.ecr_repo,
-    agentcore_role=base_stack.agentcore_role,
+    base_stack=base_stack,
 )
 
 # Add dependencies
 runtime_stack.add_dependency(base_stack)
+web_client_stack.add_dependency(base_stack)
 
 # Create Multi-Agent stack (for orchestrator + specialist agents)
 multi_agent_stack = MultiAgentStack(
@@ -85,6 +97,41 @@ multi_agent_stack = MultiAgentStack(
 
 # Multi-agent stack depends on base stack
 multi_agent_stack.add_dependency(base_stack)
+
+# Create Vision Infrastructure stack
+vision_stack = VisionInfrastructureStack(
+    app,
+    f"AgentCoreVision-{env_name}",
+    env=env,
+    description=f"Infrastructure for AgentCore Vision Agent capabilities ({env_name})"
+)
+
+# Create CodeBuild stack (depends on base stack and web client stack)
+codebuild_stack = CodeBuildStack(
+    app,
+    f"AgentCoreCodeBuild-{env_name}",
+    env=env,
+    description=f"CodeBuild pipelines for automated builds and deployments ({env_name})",
+    base_stack=base_stack,
+    web_client_stack=web_client_stack,  # Optional, can be None
+)
+
+# Add dependencies
+codebuild_stack.add_dependency(base_stack)
+if web_client_stack:
+    codebuild_stack.add_dependency(web_client_stack)
+
+# Create Deployment stack (orchestration and health checks)
+deployment_stack = DeploymentStack(
+    app,
+    f"AgentCoreDeployment-{env_name}",
+    env=env,
+    description=f"Deployment orchestration and health checks ({env_name})",
+    base_stack=base_stack,
+)
+
+# Add dependencies
+deployment_stack.add_dependency(base_stack)
 
 app.synth()
 

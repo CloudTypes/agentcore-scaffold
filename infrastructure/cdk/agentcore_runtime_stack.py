@@ -23,6 +23,7 @@ class AgentCoreRuntimeStack(Stack):
         self,
         scope: Construct,
         construct_id: str,
+        base_stack=None,
         ecr_repo: ecr.IRepository = None,
         agentcore_role: iam.IRole = None,
         **kwargs
@@ -33,24 +34,36 @@ class AgentCoreRuntimeStack(Stack):
         Args:
             scope: Parent construct
             construct_id: Stack ID
-            ecr_repo: ECR repository for Docker images
-            agentcore_role: IAM role for AgentCore Runtime
+            base_stack: Base stack with ECR repositories and IAM roles
+            ecr_repo: ECR repository for Docker images (legacy, use base_stack instead)
+            agentcore_role: IAM role for AgentCore Runtime (legacy, use base_stack instead)
         """
         super().__init__(scope, construct_id, **kwargs)
 
-        # Get ECR repository URI from parameter or use provided
-        ecr_repo_uri = self.node.try_get_context("ecr_repo_uri")
-        if not ecr_repo_uri and ecr_repo:
+        env_name = self.node.try_get_context("environment") or "dev"
+        
+        # Get ECR repository from base stack (preferred) or use provided (legacy)
+        if base_stack:
+            ecr_repos = base_stack.ecr_repos
+            if "voice" not in ecr_repos:
+                raise ValueError("Voice agent ECR repository not found in base_stack.ecr_repos")
+            voice_ecr_repo = ecr_repos["voice"]
+            ecr_repo_uri = voice_ecr_repo.repository_uri
+            agentcore_role = base_stack.agentcore_role
+        elif ecr_repo:
+            # Legacy support
             ecr_repo_uri = ecr_repo.repository_uri
-        if not ecr_repo_uri:
-            raise ValueError("ECR repository URI is required. Provide ecr_repo or set ecr_repo_uri in context.")
+        else:
+            ecr_repo_uri = self.node.try_get_context("ecr_repo_uri")
+            if not ecr_repo_uri:
+                raise ValueError("ECR repository URI is required. Provide base_stack, ecr_repo, or set ecr_repo_uri in context.")
 
         # Get role ARN from parameter or use provided
         role_arn = self.node.try_get_context("agentcore_role_arn")
         if not role_arn and agentcore_role:
             role_arn = agentcore_role.role_arn
         if not role_arn:
-            raise ValueError("AgentCore role ARN is required. Provide agentcore_role or set agentcore_role_arn in context.")
+            raise ValueError("AgentCore role ARN is required. Provide base_stack, agentcore_role, or set agentcore_role_arn in context.")
 
         # Lambda function for AgentCore Runtime custom resource
         runtime_handler = _lambda.Function(
@@ -92,8 +105,16 @@ class AgentCoreRuntimeStack(Stack):
         )
 
         # AgentCore Runtime custom resource
-        runtime_name = self.node.try_get_context("runtime_name") or "voice-agent-runtime"
-        image_tag = self.node.try_get_context("image_tag") or "latest"
+        runtime_name = self.node.try_get_context("runtime_name") or f"voice-agent-runtime-{env_name}"
+        
+        # Get image tag from SSM Parameter Store (updated by CodeBuild)
+        # Parameter is created in base stack, reference it here
+        image_tag_param = ssm.StringParameter.from_string_parameter_name(
+            self,
+            "VoiceImageTagParam",
+            string_parameter_name=f"/agentcore/voice-agent/{env_name}/voice-image-tag"
+        )
+        image_tag = image_tag_param.string_value or self.node.try_get_context("image_tag") or "latest"
         
         # Construct full image URI
         if ecr_repo_uri:
@@ -115,22 +136,40 @@ class AgentCoreRuntimeStack(Stack):
             }
         )
 
-        # Store runtime endpoint in SSM
+        # Store runtime endpoint in SSM (environment-specific)
         ssm.StringParameter(
             self,
             "RuntimeEndpointParam",
+            parameter_name=f"/agentcore/voice-agent/{env_name}/voice-agent-endpoint",
+            string_value=runtime.get_att_string("Endpoint"),
+            description="AgentCore Runtime endpoint URL for voice agent"
+        )
+        
+        # Also store at root level for backward compatibility
+        ssm.StringParameter(
+            self,
+            "RuntimeEndpointParamLegacy",
             parameter_name="/agentcore/voice-agent/runtime-endpoint",
             string_value=runtime.get_att_string("Endpoint"),
-            description="AgentCore Runtime endpoint URL"
+            description="AgentCore Runtime endpoint URL (legacy)"
         )
 
-        # Store runtime ID in SSM
+        # Store runtime ID in SSM (environment-specific)
         ssm.StringParameter(
             self,
             "RuntimeIdParam",
+            parameter_name=f"/agentcore/voice-agent/{env_name}/voice-agent-runtime-id",
+            string_value=runtime.get_att_string("RuntimeId"),
+            description="AgentCore Runtime ID for voice agent"
+        )
+        
+        # Also store at root level for backward compatibility
+        ssm.StringParameter(
+            self,
+            "RuntimeIdParamLegacy",
             parameter_name="/agentcore/voice-agent/runtime-id",
             string_value=runtime.get_att_string("RuntimeId"),
-            description="AgentCore Runtime ID"
+            description="AgentCore Runtime ID (legacy)"
         )
 
         # Outputs

@@ -900,3 +900,304 @@ def test_retrieve_memories_error_handling(mock_client_class, mock_env_vars):
     
     assert memories == []
 
+
+# Additional Error Handling Tests
+@patch('memory.client.MEMORY_AVAILABLE', True)
+@patch('memory.client.MemoryControlPlaneClient')
+@patch('memory.client.AgentCoreMemoryClient')
+def test_create_memory_resource_control_plane_error(mock_client_class, mock_control_plane_class, mock_env_vars):
+    """Test create_memory_resource with control plane client error."""
+    from memory.client import MemoryClient
+    
+    mock_control_plane = MagicMock()
+    mock_control_plane.get_memory.side_effect = Exception("Control plane error")
+    mock_control_plane_class.return_value = mock_control_plane
+    
+    mock_client = MagicMock()
+    mock_client.create_memory.return_value = {"memoryId": "new-id"}
+    mock_client_class.return_value = mock_client
+    
+    client = MemoryClient(memory_id="existing-id")
+    
+    # Should handle control plane error and create new memory
+    result = client.create_memory_resource()
+    assert result is not None
+    assert result["memoryId"] == "new-id"
+
+
+@patch('memory.client.MEMORY_AVAILABLE', True)
+@patch('memory.client.AgentCoreMemoryClient')
+def test_store_event_exception_types(mock_client_class, mock_env_vars):
+    """Test store_event with various exception types."""
+    from memory.client import MemoryClient
+    
+    client = MemoryClient(memory_id="test-id")
+    mock_client = MagicMock()
+    client._client = mock_client
+    
+    # Test with ValueError
+    mock_client.create_event.side_effect = ValueError("Invalid event")
+    client.store_event(
+        actor_id="user@example.com",
+        session_id="session-123",
+        event_type="user_input",
+        payload={"text": "Hello"}
+    )
+    # Should not raise, just log error
+    
+    # Test with RuntimeError
+    mock_client.create_event.side_effect = RuntimeError("Runtime error")
+    client.store_event(
+        actor_id="user@example.com",
+        session_id="session-123",
+        event_type="user_input",
+        payload={"text": "Hello"}
+    )
+    # Should not raise, just log error
+
+
+@patch('memory.client.MEMORY_AVAILABLE', True)
+@patch('memory.client.boto3.client')
+def test_retrieve_memories_summaries_error(mock_boto3, mock_env_vars):
+    """Test error handling in retrieve_memories for summaries."""
+    from memory.client import MemoryClient
+    
+    mock_bedrock = MagicMock()
+    mock_bedrock.list_memory_records.side_effect = Exception("List failed")
+    mock_boto3.return_value = mock_bedrock
+    
+    client = MemoryClient(memory_id="test-id")
+    
+    memories = client.retrieve_memories(
+        actor_id="user@example.com",
+        memory_type="summaries",
+        top_k=5
+    )
+    
+    # Should return empty list on error
+    assert memories == []
+
+
+@patch('memory.client.MEMORY_AVAILABLE', True)
+@patch('memory.client.boto3.client')
+def test_get_session_summary_list_failure(mock_boto3, mock_env_vars):
+    """Test get_session_summary when ListMemoryRecords fails."""
+    from memory.client import MemoryClient
+    
+    mock_bedrock = MagicMock()
+    mock_bedrock.list_memory_records.side_effect = Exception("List failed")
+    
+    mock_client = MagicMock()
+    mock_client.retrieve_memory_records.return_value = {
+        "memoryRecords": [{
+            "content": {"text": "Fallback summary"}
+        }]
+    }
+    mock_boto3.return_value = mock_bedrock
+    
+    client = MemoryClient(memory_id="test-id")
+    client._client = mock_client
+    
+    summary = client.get_session_summary("user@example.com", "session-123")
+    
+    # Should fall back to semantic search
+    assert summary is not None
+
+
+@patch('memory.client.MEMORY_AVAILABLE', True)
+@patch('memory.client.boto3.client')
+def test_list_sessions_get_memory_record_failure(mock_boto3, mock_env_vars):
+    """Test list_sessions when GetMemoryRecord fails."""
+    from memory.client import MemoryClient
+    
+    mock_bedrock = MagicMock()
+    mock_bedrock.list_memory_records.return_value = {
+        "memoryRecordSummaries": [{
+            "memoryRecordId": "record-123"
+        }]
+    }
+    mock_bedrock.get_memory_record.side_effect = Exception("Get failed")
+    mock_boto3.return_value = mock_bedrock
+    
+    client = MemoryClient(memory_id="test-id")
+    
+    sessions = client.list_sessions("user@example.com", top_k=10)
+    
+    # Should handle error gracefully and continue
+    assert isinstance(sessions, list)
+
+
+@patch('memory.client.MEMORY_AVAILABLE', True)
+@patch('memory.client.boto3.client')
+def test_list_sessions_namespace_extraction_edge_cases(mock_boto3, mock_env_vars):
+    """Test list_sessions with edge cases in namespace extraction."""
+    from memory.client import MemoryClient
+    
+    mock_bedrock = MagicMock()
+    mock_bedrock.list_memory_records.return_value = {
+        "memoryRecordSummaries": [{
+            "memoryRecordId": "record-123"
+        }]
+    }
+    # Return namespace that doesn't match expected pattern
+    mock_bedrock.get_memory_record.return_value = {
+        "memoryRecord": {
+            "namespaces": ["/invalid/namespace/path"],
+            "content": {"text": "Test"}
+        }
+    }
+    mock_boto3.return_value = mock_bedrock
+    
+    client = MemoryClient(memory_id="test-id")
+    
+    sessions = client.list_sessions("user@example.com", top_k=10)
+    
+    # Should handle invalid namespace gracefully
+    assert isinstance(sessions, list)
+
+
+# Edge Cases Tests
+@patch('memory.client.MEMORY_AVAILABLE', True)
+@patch('memory.client.AgentCoreMemoryClient')
+def test_retrieve_memories_empty_query(mock_client_class, mock_env_vars):
+    """Test retrieve_memories with empty query string."""
+    from memory.client import MemoryClient
+    
+    mock_client = MagicMock()
+    mock_client_class.return_value = mock_client
+    
+    client = MemoryClient(memory_id="test-id")
+    client._client = mock_client
+    
+    memories = client.retrieve_memories(
+        actor_id="user@example.com",
+        query="",
+        top_k=5
+    )
+    
+    assert memories == []
+    mock_client.retrieve_memory_records.assert_not_called()
+
+
+@patch('memory.client.MEMORY_AVAILABLE', True)
+@patch('memory.client.AgentCoreMemoryClient')
+def test_retrieve_memories_whitespace_query(mock_client_class, mock_env_vars):
+    """Test retrieve_memories with whitespace-only query."""
+    from memory.client import MemoryClient
+    
+    mock_client = MagicMock()
+    mock_client_class.return_value = mock_client
+    
+    client = MemoryClient(memory_id="test-id")
+    client._client = mock_client
+    
+    memories = client.retrieve_memories(
+        actor_id="user@example.com",
+        query="   ",
+        top_k=5
+    )
+    
+    assert memories == []
+    mock_client.retrieve_memory_records.assert_not_called()
+
+
+def test_sanitize_actor_id_very_long(mock_env_vars):
+    """Test sanitize_actor_id with very long actor ID."""
+    from memory.client import MemoryClient
+    
+    client = MemoryClient()
+    long_id = "a" * 200 + "@example.com"
+    sanitized = client._sanitize_actor_id(long_id)
+    
+    assert "@" not in sanitized
+    assert sanitized.startswith("a")
+
+
+def test_sanitize_actor_id_special_characters(mock_env_vars):
+    """Test sanitize_actor_id with special characters."""
+    from memory.client import MemoryClient
+    
+    client = MemoryClient()
+    special_id = "user+name@example.co.uk"
+    sanitized = client._sanitize_actor_id(special_id)
+    
+    assert "@" not in sanitized
+    assert "." not in sanitized
+
+
+@patch('memory.client.MEMORY_AVAILABLE', True)
+@patch('memory.client.boto3.client')
+def test_retrieve_summaries_list_pagination_exact_top_k(mock_boto3, mock_env_vars):
+    """Test retrieve_summaries_list with exactly top_k records."""
+    from memory.client import MemoryClient
+    
+    mock_bedrock = MagicMock()
+    # Return exactly 5 records (top_k)
+    mock_bedrock.list_memory_records.return_value = {
+        "memoryRecordSummaries": [
+            {"content": {"text": f"Summary {i}"}} for i in range(5)
+        ]
+    }
+    mock_boto3.return_value = mock_bedrock
+    
+    client = MemoryClient(memory_id="test-id")
+    
+    memories = client._retrieve_summaries_list(
+        actor_id="user@example.com",
+        sanitized_actor_id="user_example_com",
+        namespace_prefix=None,
+        top_k=5
+    )
+    
+    assert len(memories) == 5
+
+
+@patch('memory.client.MEMORY_AVAILABLE', True)
+@patch('memory.client.boto3.client')
+def test_get_session_summary_empty_namespace_list(mock_boto3, mock_env_vars):
+    """Test get_session_summary with empty namespaces list."""
+    from memory.client import MemoryClient
+    
+    mock_bedrock = MagicMock()
+    # Return empty list from list_memory_records (no records found)
+    mock_bedrock.list_memory_records.return_value = {
+        "memoryRecordSummaries": []
+    }
+    mock_boto3.return_value = mock_bedrock
+    
+    client = MemoryClient(memory_id="test-id")
+    
+    summary = client.get_session_summary("user@example.com", "session-123")
+    
+    # Should return None when no records found
+    assert summary is None
+
+
+@patch('memory.client.MEMORY_AVAILABLE', True)
+@patch('memory.client.boto3.client')
+def test_get_session_summary_missing_content_fields(mock_boto3, mock_env_vars):
+    """Test get_session_summary with missing content fields."""
+    from memory.client import MemoryClient
+    
+    mock_bedrock = MagicMock()
+    mock_bedrock.list_memory_records.return_value = {
+        "memoryRecordSummaries": [{
+            "memoryRecordId": "record-123"
+        }]
+    }
+    mock_bedrock.get_memory_record.return_value = {
+        "memoryRecord": {
+            "namespaces": ["/summaries/user_example_com/session-123"],
+            "content": {}  # Missing text field
+        }
+    }
+    mock_boto3.return_value = mock_bedrock
+    
+    client = MemoryClient(memory_id="test-id")
+    
+    summary = client.get_session_summary("user@example.com", "session-123")
+    
+    # Should handle missing content gracefully
+    assert summary is not None
+    # Content should be empty or default
+

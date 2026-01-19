@@ -1,0 +1,82 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - echo Build started on `date`
+      - COMMIT_SHA=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - BRANCH_NAME=$(echo $CODEBUILD_WEBHOOK_HEAD_REF | sed 's/refs\/heads\///' || echo "main")
+      - echo Building web client for branch $BRANCH_NAME, commit $COMMIT_SHA
+      - |
+        # Check if this is a React app (has package.json)
+        if [ -f "client/web/package.json" ]; then
+          echo React app detected, installing dependencies...
+          cd client/web
+          npm install
+          echo Building React app...
+          npm run build
+          cd ../..
+          BUILD_DIR="client/web/build"
+        else
+          echo Vanilla HTML/JS/CSS detected, using existing files...
+          BUILD_DIR="client/web"
+        fi
+      - echo "BUILD_DIR=${BUILD_DIR}" > /tmp/build.env
+  build:
+    commands:
+      - echo Generating runtime configuration...
+      - |
+        # Option 1: Use Python script if available (recommended)
+        if [ -f "scripts/generate_web_config.py" ]; then
+          echo Using Python script to generate config.js...
+          pip install boto3 || echo "boto3 already installed"
+          python scripts/generate_web_config.py \
+            --environment $ENVIRONMENT \
+            --region $AWS_REGION \
+            --output ${BUILD_DIR}/config.js
+        else
+          # Option 2: Generate inline (fallback)
+          echo Generating config.js inline...
+          API_BASE=$(aws ssm get-parameter \
+            --name "/agentcore/voice-agent/${ENVIRONMENT}/voice-agent-endpoint" \
+            --region $AWS_REGION \
+            --query 'Parameter.Value' \
+            --output text 2>/dev/null || echo "")
+          ORCHESTRATOR_BASE=$(aws ssm get-parameter \
+            --name "/agentcore/voice-agent/${ENVIRONMENT}/orchestrator-endpoint" \
+            --region $AWS_REGION \
+            --query 'Parameter.Value' \
+            --output text 2>/dev/null || echo "")
+          WS_BASE=$(echo $API_BASE | sed 's|https\?://|wss://|' | sed 's|http://|ws://|')
+          
+          # Generate config.js
+          cat > ${BUILD_DIR}/config.js <<EOF
+          // Auto-generated runtime configuration
+          window.API_BASE = "${API_BASE:-}";
+          window.ORCHESTRATOR_BASE = "${ORCHESTRATOR_BASE:-}";
+          window.WS_BASE = "${WS_BASE:-}";
+          EOF
+        fi
+        echo Generated config.js with API endpoints
+      - echo Syncing files to S3...
+      - aws s3 sync ${BUILD_DIR} s3://${S3_BUCKET}/ --delete --region $AWS_REGION
+  post_build:
+    commands:
+      - echo Build completed on `date`
+      - |
+        if [ -n "$CLOUDFRONT_DISTRIBUTION_ID" ]; then
+          echo Creating CloudFront invalidation...
+          INVALIDATION_ID=$(aws cloudfront create-invalidation \
+            --distribution-id $CLOUDFRONT_DISTRIBUTION_ID \
+            --paths "/*" \
+            --region $AWS_REGION \
+            --query 'Invalidation.Id' \
+            --output text)
+          echo CloudFront invalidation created: $INVALIDATION_ID
+        else
+          echo No CloudFront distribution ID provided, skipping invalidation
+        fi
+
+artifacts:
+  files:
+    - /tmp/build.env

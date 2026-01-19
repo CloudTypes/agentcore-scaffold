@@ -1,0 +1,65 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO_URI
+      - COMMIT_SHA=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - BRANCH_NAME=$(echo $CODEBUILD_WEBHOOK_HEAD_REF | sed 's/refs\/heads\///' || echo "main")
+      - IMAGE_TAG="${BRANCH_NAME}-${COMMIT_SHA}"
+      - echo Building Docker image with tag $IMAGE_TAG
+      - echo "IMAGE_TAG=${IMAGE_TAG}" > /tmp/build.env
+      - echo "COMMIT_SHA=${COMMIT_SHA}" >> /tmp/build.env
+      - echo "BRANCH_NAME=${BRANCH_NAME}" >> /tmp/build.env
+  build:
+    commands:
+      - echo Build started on `date`
+      - echo Building the Docker image...
+      - docker build -t $ECR_REPO_URI:$IMAGE_TAG -f agents/orchestrator/Dockerfile .
+      - docker tag $ECR_REPO_URI:$IMAGE_TAG $ECR_REPO_URI:latest
+  post_build:
+    commands:
+      - echo Build completed on `date`
+      - echo Pushing the Docker images...
+      - docker push $ECR_REPO_URI:$IMAGE_TAG
+      - docker push $ECR_REPO_URI:latest
+      - echo Updating SSM parameter with new image tag...
+      - aws ssm put-parameter \
+          --name "/agentcore/voice-agent/${ENVIRONMENT}/orchestrator-image-tag" \
+          --value "$IMAGE_TAG" \
+          --type "String" \
+          --overwrite \
+          --region $AWS_REGION
+      - echo Image tag updated: $IMAGE_TAG
+      - echo Checking if CDK deployment is needed...
+      - |
+        if [ -f "infrastructure/cdk/cdk.json" ]; then
+          echo Installing CDK dependencies...
+          cd infrastructure/cdk
+          pip install -r requirements.txt
+          echo Deploying CDK stacks...
+          cdk deploy --all --require-approval never --context environment=$ENVIRONMENT --context image_tag=$IMAGE_TAG
+        else
+          echo No CDK infrastructure found, skipping deployment
+        fi
+      - echo Updating AgentCore Runtime if needed...
+      - |
+        RUNTIME_ID=$(aws ssm get-parameter \
+          --name "/agentcore/voice-agent/runtime-id" \
+          --region $AWS_REGION \
+          --query 'Parameter.Value' \
+          --output text 2>/dev/null || echo "")
+        if [ -n "$RUNTIME_ID" ]; then
+          echo Updating runtime $RUNTIME_ID with new image...
+          aws bedrock-agentcore update-runtime \
+            --runtime-id $RUNTIME_ID \
+            --container-configuration "imageUri=$ECR_REPO_URI:$IMAGE_TAG" \
+            --region $AWS_REGION || echo "Runtime update failed or not applicable"
+        else
+          echo No runtime ID found, skipping runtime update
+        fi
+
+artifacts:
+  files:
+    - /tmp/build.env

@@ -22,6 +22,20 @@ let currentSessionId = null;
 let currentMode = 'voice'; // 'voice' or 'text'
 let orchestratorConnected = false;
 
+// Vision file handling state
+let currentFile = null;
+let uploadMethod = null; // 'base64' or 's3'
+
+// File size limits
+const SIZE_LIMITS = {
+    image: { base64: 5 * 1024 * 1024, s3: 1024 * 1024 * 1024 }, // 5MB base64, 1GB S3
+    video: { base64: 25 * 1024 * 1024, s3: 1024 * 1024 * 1024 } // 25MB base64, 1GB S3
+};
+
+// Accepted file formats
+const ACCEPTED_IMAGE_FORMATS = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+const ACCEPTED_VIDEO_FORMATS = ['video/mp4', 'video/quicktime', 'video/x-matroska', 'video/webm', 'video/x-flv', 'video/mpeg', 'video/x-ms-wmv', 'video/3gpp'];
+
 /**
  * Get the base URL for the voice agent API.
  * 
@@ -862,6 +876,17 @@ async function sendTextToOrchestrator(message) {
 
 function sendText() {
     const text = textInput.value.trim();
+    
+    // Check if file is attached - if so, use vision analysis
+    if (currentFile) {
+        if (!text) {
+            addMessage('Error', 'Please enter a prompt/question about the file', 'error');
+            return;
+        }
+        sendVisionAnalysis(text, currentFile);
+        return;
+    }
+    
     if (!text) {
         return;  // Don't send empty messages
     }
@@ -1119,10 +1144,303 @@ function updateInputModeIndicator(mode) {
     }
 }
 
+/**
+ * Convert markdown text to HTML (simple implementation for common markdown features)
+ * Handles both multi-line and single-paragraph formats
+ */
+function markdownToHtml(text) {
+    if (!text) return '';
+    
+    // First, normalize the text - split numbered lists that might be in a single paragraph
+    // Pattern: "1. **Title**: description" appears in the middle of text
+    // We need to find all numbered items and split them into separate lines
+    
+    let normalized = text;
+    
+    // Find all numbered list items in the text - use a simpler, more reliable approach
+    // Split on pattern: space or start, then number, period, space
+    // This handles cases like "text. 1. item" or "1. item"
+    
+    // First, check if text contains numbered list patterns
+    if (/\d+\.\s+/.test(text)) {
+        // Split text into parts: intro, list items, outro
+        // Pattern: find " number. " where number is 1-9 (or more digits)
+        const parts = [];
+        let lastIndex = 0;
+        const listItemRegex = /(\d+)\.\s+/g;
+        let match;
+        
+        // Find all list item starts
+        const itemStarts = [];
+        while ((match = listItemRegex.exec(text)) !== null) {
+            itemStarts.push({
+                number: match[1],
+                index: match.index
+            });
+        }
+        
+        // If we found multiple numbered items, split them
+        if (itemStarts.length > 1) {
+            let result = '';
+            
+            // Add intro text
+            if (itemStarts[0].index > 0) {
+                result = text.substring(0, itemStarts[0].index).trim();
+                if (result) result += '\n\n';
+            }
+            
+            // Process each list item
+            for (let i = 0; i < itemStarts.length; i++) {
+                const start = itemStarts[i];
+                const nextStart = i < itemStarts.length - 1 ? itemStarts[i + 1] : null;
+                
+                // Content starts after "number. " (number.length + 2 for ". ")
+                const contentStart = start.index + start.number.length + 2;
+                // Content ends at the start of the next item (or end of text)
+                const contentEnd = nextStart ? nextStart.index : text.length;
+                
+                const content = text.substring(contentStart, contentEnd).trim();
+                
+                result += `${start.number}. ${content}`;
+                if (i < itemStarts.length - 1) {
+                    result += '\n';
+                }
+            }
+            
+            // Add outro text if any (text after the last numbered item)
+            if (itemStarts.length > 0) {
+                const lastItem = itemStarts[itemStarts.length - 1];
+                const lastContentStart = lastItem.index + lastItem.number.length + 2;
+                const lastContentEnd = text.length;
+                const lastContent = text.substring(lastContentStart, lastContentEnd).trim();
+                
+                // Check if there's text after the last item's content that's not part of the item
+                // This is tricky - we'll assume if the last item ends with punctuation and there's more text,
+                // it might be outro. For now, we'll include everything in the last item.
+                // Outro would be text that comes after all numbered items are done.
+                // Since we already included everything up to the end in the last item, we don't need to add outro separately.
+            }
+            
+            normalized = result;
+        }
+    }
+    
+    // Split into lines for processing
+    const lines = normalized.split('\n');
+    let html = '';
+    let inCodeBlock = false;
+    let codeBlockContent = '';
+    let inList = false;
+    let listType = null; // 'ul' or 'ol'
+    let currentParagraph = [];
+    
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmed = line.trim();
+        
+        // Handle code blocks
+        if (trimmed.startsWith('```')) {
+            // Flush any pending paragraph
+            if (currentParagraph.length > 0) {
+                html += `<p>${processInlineMarkdown(currentParagraph.join(' '))}</p>`;
+                currentParagraph = [];
+            }
+            if (inList) {
+                html += `</${listType}>`;
+                inList = false;
+                listType = null;
+            }
+            
+            if (inCodeBlock) {
+                // End code block
+                html += `<pre><code>${escapeHtml(codeBlockContent)}</code></pre>`;
+                codeBlockContent = '';
+                inCodeBlock = false;
+            } else {
+                // Start code block
+                inCodeBlock = true;
+            }
+            continue;
+        }
+        
+        if (inCodeBlock) {
+            codeBlockContent += line + '\n';
+            continue;
+        }
+        
+        // Headers
+        if (trimmed.startsWith('### ')) {
+            flushParagraph();
+            html += `<h3>${processInlineMarkdown(trimmed.substring(4))}</h3>`;
+            continue;
+        }
+        if (trimmed.startsWith('## ')) {
+            flushParagraph();
+            html += `<h2>${processInlineMarkdown(trimmed.substring(3))}</h2>`;
+            continue;
+        }
+        if (trimmed.startsWith('# ')) {
+            flushParagraph();
+            html += `<h1>${processInlineMarkdown(trimmed.substring(2))}</h1>`;
+            continue;
+        }
+        
+        // Lists - check for numbered lists (1., 2., etc.) or bullet lists (-, *, +)
+        const olMatch = trimmed.match(/^(\d+)\.\s+(.+)$/);
+        const ulMatch = trimmed.match(/^[\*\-\+]\s+(.+)$/);
+        
+        if (olMatch || ulMatch) {
+            flushParagraph(); // Flush any pending paragraph before starting list
+            
+            const currentListType = olMatch ? 'ol' : 'ul';
+            const content = olMatch ? olMatch[2] : ulMatch[1];
+            
+            // If we're already in a list of the same type, just add the item
+            // This ensures consecutive numbered items stay in the same list
+            if (inList && listType === currentListType) {
+                html += `<li>${processInlineMarkdown(content)}</li>`;
+                continue;
+            }
+            
+            // Start new list or switch list types
+            if (inList) {
+                html += `</${listType}>`;
+            }
+            html += `<${currentListType}>`;
+            inList = true;
+            listType = currentListType;
+            html += `<li>${processInlineMarkdown(content)}</li>`;
+            continue;
+        }
+        
+        // Close list if we hit a non-list line
+        // But be smart: don't close on empty lines, and look ahead to see if more list items are coming
+        if (inList) {
+            // Allow empty lines within lists (don't close on empty lines)
+            if (trimmed === '') {
+                // Check if next non-empty line is a list item
+                let nextListLine = null;
+                for (let j = i + 1; j < lines.length; j++) {
+                    const nextTrimmed = lines[j].trim();
+                    if (nextTrimmed === '') continue;
+                    nextListLine = nextTrimmed;
+                    break;
+                }
+                
+                if (nextListLine) {
+                    const nextOlMatch = nextListLine.match(/^\d+\.\s+/);
+                    const nextUlMatch = nextListLine.match(/^[\*\-\+]\s+/);
+                    const nextIsList = (listType === 'ol' && nextOlMatch) || (listType === 'ul' && nextUlMatch);
+                    
+                    if (!nextIsList) {
+                        // Next non-empty line is not a list item, close the list
+                        html += `</${listType}>`;
+                        inList = false;
+                        listType = null;
+                    }
+                    // Otherwise keep list open (empty line within list)
+                } else {
+                    // No more lines, close the list
+                    html += `</${listType}>`;
+                    inList = false;
+                    listType = null;
+                }
+            } else {
+                // Non-empty, non-list line - close the list
+                html += `</${listType}>`;
+                inList = false;
+                listType = null;
+            }
+        }
+        
+        // Empty line = paragraph break
+        if (trimmed === '') {
+            flushParagraph();
+            continue;
+        }
+        
+        // Add to current paragraph (will be flushed later)
+        currentParagraph.push(line);
+    }
+    
+    // Flush any remaining paragraph
+    flushParagraph();
+    
+    // Close any open list
+    if (inList) {
+        html += `</${listType}>`;
+    }
+    
+    function flushParagraph() {
+        if (currentParagraph.length > 0) {
+            const paraText = currentParagraph.join(' ').trim();
+            if (paraText) {
+                html += `<p>${processInlineMarkdown(paraText)}</p>`;
+            }
+            currentParagraph = [];
+        }
+    }
+    
+    return html;
+}
+
+/**
+ * Process inline markdown (bold, italic, code, links) in a line
+ */
+function processInlineMarkdown(text) {
+    // Escape HTML first
+    let html = escapeHtml(text);
+    
+    // Bold (**text** or __text__) - but not inside code
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
+    
+    // Italic (*text* or _text_) - but not if it's part of **
+    html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>');
+    html = html.replace(/(?<!_)_([^_]+)_(?!_)/g, '<em>$1</em>');
+    
+    // Inline code (`code`)
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+    
+    // Links [text](url)
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    
+    return html;
+}
+
+/**
+ * Escape HTML to prevent XSS
+ */
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
 function addMessage(sender, text, type) {
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${type}`;
-    messageDiv.innerHTML = `<strong>${sender}:</strong> ${text}`;
+    
+    // For agent messages, render markdown; for others, escape HTML
+    if (type === 'agent') {
+        const formattedText = markdownToHtml(text);
+        // Debug: log if formatting produced HTML
+        if (formattedText.includes('<ol>') || formattedText.includes('<ul>') || formattedText.includes('<li>')) {
+            console.log('Markdown formatting detected lists');
+        } else if (text.match(/\d+\.\s+/)) {
+            console.log('Text contains numbered items but formatting did not produce lists:', text.substring(0, 200));
+        }
+        messageDiv.innerHTML = `<strong>${sender}:</strong><div class="message-content">${formattedText}</div>`;
+    } else {
+        // Escape HTML for user/error messages
+        const escapedText = text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/\n/g, '<br>');
+        messageDiv.innerHTML = `<strong>${sender}:</strong> ${escapedText}`;
+    }
+    
     messagesEl.appendChild(messageDiv);
     messagesEl.scrollTop = messagesEl.scrollHeight;
 }
@@ -1290,6 +1608,201 @@ function exportDiagnostics() {
     URL.revokeObjectURL(url);
 }
 
+// Vision file handling functions
+function handleFileSelect(file) {
+    if (!file) return;
+    
+    const fileType = file.type.startsWith('image/') ? 'image' : 'video';
+    const acceptedFormats = fileType === 'image' ? ACCEPTED_IMAGE_FORMATS : ACCEPTED_VIDEO_FORMATS;
+    
+    if (!acceptedFormats.includes(file.type)) {
+        addMessage('Error', `Unsupported file type: ${file.type}. Supported: ${acceptedFormats.join(', ')}`, 'error');
+        return;
+    }
+    
+    const limits = SIZE_LIMITS[fileType];
+    if (file.size > limits.s3) {
+        addMessage('Error', `File too large. Maximum size: ${(limits.s3 / (1024 * 1024)).toFixed(0)}MB`, 'error');
+        return;
+    }
+    
+    uploadMethod = file.size > limits.base64 ? 's3' : 'base64';
+    currentFile = file;
+    
+    // Update file preview UI
+    const filePreview = document.getElementById('filePreview');
+    const filePreviewName = document.getElementById('filePreviewName');
+    const filePreviewSize = document.getElementById('filePreviewSize');
+    const filePreviewIcon = document.getElementById('filePreviewIcon');
+    
+    filePreviewName.textContent = file.name;
+    filePreviewSize.textContent = `${(file.size / 1024 / 1024).toFixed(2)} MB - ${uploadMethod.toUpperCase()} upload`;
+    filePreviewIcon.textContent = fileType === 'image' ? '🖼️' : '🎥';
+    filePreview.style.display = 'block';
+}
+
+function clearFile() {
+    currentFile = null;
+    uploadMethod = null;
+    const fileInput = document.getElementById('fileInput');
+    if (fileInput) fileInput.value = '';
+    const filePreview = document.getElementById('filePreview');
+    if (filePreview) filePreview.style.display = 'none';
+}
+
+function validateFile(file) {
+    if (!file) return false;
+    
+    const fileType = file.type.startsWith('image/') ? 'image' : 'video';
+    const acceptedFormats = fileType === 'image' ? ACCEPTED_IMAGE_FORMATS : ACCEPTED_VIDEO_FORMATS;
+    
+    if (!acceptedFormats.includes(file.type)) {
+        return { valid: false, error: `Unsupported file type: ${file.type}` };
+    }
+    
+    const limits = SIZE_LIMITS[fileType];
+    if (file.size > limits.s3) {
+        return { valid: false, error: `File too large. Maximum size: ${(limits.s3 / (1024 * 1024)).toFixed(0)}MB` };
+    }
+    
+    return { valid: true };
+}
+
+async function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = () => {
+            // Remove data URL prefix (e.g., "data:image/jpeg;base64,")
+            const base64 = reader.result.split(',')[1];
+            resolve(base64);
+        };
+        reader.onerror = error => reject(error);
+    });
+}
+
+async function uploadFileToS3(file) {
+    try {
+        // Get presigned URL from orchestrator
+        const presignedResponse = await fetch(`${ORCHESTRATOR_BASE}/api/vision/presigned-url`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${authToken}`
+            },
+            body: JSON.stringify({
+                fileName: file.name,
+                fileType: file.type
+            })
+        });
+        
+        if (!presignedResponse.ok) {
+            const error = await presignedResponse.json();
+            throw new Error(error.detail || 'Failed to get upload URL');
+        }
+        
+        const { uploadUrl, s3Uri } = await presignedResponse.json();
+        
+        // Upload file to S3
+        const uploadResponse = await fetch(uploadUrl, {
+            method: 'PUT',
+            body: file,
+            headers: {
+                'Content-Type': file.type
+            }
+        });
+        
+        if (!uploadResponse.ok) {
+            throw new Error('Failed to upload file to S3');
+        }
+        
+        return s3Uri;
+    } catch (error) {
+        console.error('Error uploading to S3:', error);
+        throw error;
+    }
+}
+
+async function sendVisionAnalysis(prompt, file) {
+    if (!authToken) {
+        addMessage('Error', 'Please login first', 'error');
+        return;
+    }
+    
+    if (!file || !prompt.trim()) {
+        addMessage('Error', 'Please provide both a file and a prompt', 'error');
+        return;
+    }
+    
+    const mediaType = file.type.startsWith('image/') ? 'image' : 'video';
+    let payload = {
+        prompt: prompt.trim(),
+        mediaType: mediaType
+    };
+    
+    try {
+        if (uploadMethod === 's3') {
+            addMessage('System', 'Uploading file to S3...', 'agent');
+            const s3Uri = await uploadFileToS3(file);
+            payload.s3Uri = s3Uri;
+        } else {
+            addMessage('System', 'Encoding file...', 'agent');
+            const base64Data = await fileToBase64(file);
+            payload.base64Data = base64Data;
+            payload.mimeType = file.type;
+        }
+        
+        addMessage('User', `${prompt}\n[Attached: ${file.name}]`, 'user');
+        
+        // Show file preview in message
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'message user';
+        messageDiv.innerHTML = `<strong>User:</strong> ${prompt}<br>`;
+        if (mediaType === 'image') {
+            const img = document.createElement('img');
+            img.src = URL.createObjectURL(file);
+            img.style.maxWidth = '300px';
+            img.style.marginTop = '5px';
+            messageDiv.appendChild(img);
+        } else {
+            const video = document.createElement('video');
+            video.src = URL.createObjectURL(file);
+            video.controls = true;
+            video.style.maxWidth = '300px';
+            video.style.marginTop = '5px';
+            messageDiv.appendChild(video);
+        }
+        messagesEl.appendChild(messageDiv);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+        
+        // Send analysis request to orchestrator
+        const response = await fetch(`${ORCHESTRATOR_BASE}/api/vision`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${authToken}`
+            },
+            body: JSON.stringify(payload)
+        });
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || 'Vision analysis failed');
+        }
+        
+        const result = await response.json();
+        addMessage('Agent', result.text, 'agent');
+        
+        // Clear file after successful analysis
+        clearFile();
+        textInput.value = '';
+        
+    } catch (error) {
+        console.error('Error in vision analysis:', error);
+        addMessage('Error', `Vision analysis failed: ${error.message}`, 'error');
+    }
+}
+
 // Initialize authentication and mode on page load
 window.addEventListener('DOMContentLoaded', () => {
     checkAuth();
@@ -1298,4 +1811,14 @@ window.addEventListener('DOMContentLoaded', () => {
     // Set radio button to match current mode
     document.getElementById('voiceModeRadio').checked = (currentMode === 'voice');
     document.getElementById('textModeRadio').checked = (currentMode === 'text');
+    
+    // Setup file input handler
+    const fileInput = document.getElementById('fileInput');
+    if (fileInput) {
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFileSelect(e.target.files[0]);
+            }
+        });
+    }
 });
