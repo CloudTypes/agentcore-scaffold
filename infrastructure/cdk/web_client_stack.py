@@ -9,6 +9,7 @@ from aws_cdk import (
     aws_cloudfront_origins as origins,
     aws_iam as iam,
     aws_certificatemanager as acm,
+    aws_ssm as ssm,
     CfnOutput,
     RemovalPolicy,
 )
