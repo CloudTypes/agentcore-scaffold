@@ -22,23 +22,17 @@ class AgentCoreStack(Stack):
         # ECR Repositories for Docker images (separate repo per agent)
         agents = ["orchestrator", "vision", "document", "data", "tool", "voice"]
         ecr_repos = {}
-        
+
         for agent_name in agents:
             repo = ecr.Repository(
                 self,
                 f"{agent_name.capitalize()}ECRRepo",
                 repository_name=f"agentcore-scaffold-{agent_name}",
                 image_scan_on_push=True,
-                lifecycle_rules=[
-                    ecr.LifecycleRule(
-                        rule_priority=1,
-                        description="Keep last 10 images",
-                        max_image_count=10
-                    )
-                ]
+                lifecycle_rules=[ecr.LifecycleRule(rule_priority=1, description="Keep last 10 images", max_image_count=10)],
             )
             ecr_repos[agent_name] = repo
-        
+
         # Keep legacy single repo for backward compatibility (deprecated)
         ecr_repo = ecr_repos.get("voice", None)  # Use voice as default for legacy compatibility
 
@@ -48,20 +42,15 @@ class AgentCoreStack(Stack):
             "AgentCoreRuntimeRole",
             assumed_by=iam.ServicePrincipal("bedrock.amazonaws.com"),
             description="Role for AgentCore Runtime to access Bedrock, Memory, and Secrets",
-            managed_policies=[
-                iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaBasicExecutionRole")
-            ]
+            managed_policies=[iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSLambdaBasicExecutionRole")],
         )
 
         # Bedrock permissions
         agentcore_role.add_to_policy(
             iam.PolicyStatement(
                 effect=iam.Effect.ALLOW,
-                actions=[
-                    "bedrock:InvokeModel",
-                    "bedrock:InvokeModelWithResponseStream"
-                ],
-                resources=["*"]
+                actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+                resources=["*"],
             )
         )
 
@@ -74,9 +63,9 @@ class AgentCoreStack(Stack):
                     "bedrock-agentcore:GetMemory",
                     "bedrock-agentcore:CreateEvent",
                     "bedrock-agentcore:RetrieveMemoryRecords",
-                    "bedrock-agentcore:ListMemoryRecords"
+                    "bedrock-agentcore:ListMemoryRecords",
                 ],
-                resources=["*"]
+                resources=["*"],
             )
         )
 
@@ -84,13 +73,8 @@ class AgentCoreStack(Stack):
         agentcore_role.add_to_policy(
             iam.PolicyStatement(
                 effect=iam.Effect.ALLOW,
-                actions=[
-                    "secretsmanager:GetSecretValue",
-                    "secretsmanager:DescribeSecret"
-                ],
-                resources=[
-                    f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:agentcore/scaffold/*"
-                ]
+                actions=["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
+                resources=[f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:agentcore/scaffold/*"],
             )
         )
 
@@ -98,14 +82,8 @@ class AgentCoreStack(Stack):
         agentcore_role.add_to_policy(
             iam.PolicyStatement(
                 effect=iam.Effect.ALLOW,
-                actions=[
-                    "ssm:GetParameter",
-                    "ssm:GetParameters",
-                    "ssm:GetParametersByPath"
-                ],
-                resources=[
-                    f"arn:aws:ssm:{self.region}:{self.account}:parameter/agentcore/scaffold/*"
-                ]
+                actions=["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"],
+                resources=[f"arn:aws:ssm:{self.region}:{self.account}:parameter/agentcore/scaffold/*"],
             )
         )
 
@@ -113,14 +91,8 @@ class AgentCoreStack(Stack):
         agentcore_role.add_to_policy(
             iam.PolicyStatement(
                 effect=iam.Effect.ALLOW,
-                actions=[
-                    "logs:CreateLogGroup",
-                    "logs:CreateLogStream",
-                    "logs:PutLogEvents"
-                ],
-                resources=[
-                    f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/agentcore/scaffold:*"
-                ]
+                actions=["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+                resources=[f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/agentcore/scaffold:*"],
             )
         )
 
@@ -133,8 +105,8 @@ class AgentCoreStack(Stack):
             generate_secret_string=secretsmanager.SecretStringGenerator(
                 secret_string_template='{"client_id": "", "client_secret": "", "redirect_uri": ""}',
                 generate_string_key="placeholder",
-                exclude_characters='"'
-            )
+                exclude_characters='"',
+            ),
         )
 
         jwt_secret = secretsmanager.Secret(
@@ -146,8 +118,8 @@ class AgentCoreStack(Stack):
                 secret_string_template='{"secret_key": ""}',
                 generate_string_key="secret_key",
                 password_length=64,
-                exclude_characters='"'
-            )
+                exclude_characters='"',
+            ),
         )
 
         agent_auth_secret = secretsmanager.Secret(
@@ -159,8 +131,8 @@ class AgentCoreStack(Stack):
                 secret_string_template='{"secret_key": ""}',
                 generate_string_key="secret_key",
                 password_length=64,
-                exclude_characters='"'
-            )
+                exclude_characters='"',
+            ),
         )
 
         memory_id_secret = secretsmanager.Secret(
@@ -169,10 +141,8 @@ class AgentCoreStack(Stack):
             secret_name="agentcore/scaffold/memory-id",
             description="AgentCore Memory resource ID",
             generate_secret_string=secretsmanager.SecretStringGenerator(
-                secret_string_template='{"memory_id": ""}',
-                generate_string_key="memory_id",
-                exclude_characters='"'
-            )
+                secret_string_template='{"memory_id": ""}', generate_string_key="memory_id", exclude_characters='"'
+            ),
         )
 
         # Grant read access to secrets
@@ -187,20 +157,20 @@ class AgentCoreStack(Stack):
             "VoiceAgentLogGroup",
             log_group_name="/aws/agentcore/scaffold",
             retention=logs.RetentionDays.ONE_WEEK,
-            removal_policy=cdk.RemovalPolicy.DESTROY
+            removal_policy=cdk.RemovalPolicy.DESTROY,
         )
 
         # SSM Parameters for non-sensitive configuration
         env_name = self.node.try_get_context("environment") or "dev"
-        
+
         ssm.StringParameter(
             self,
             "MemoryRegionParam",
             parameter_name=f"/agentcore/scaffold/{env_name}/memory-region",
             string_value=self.region,
-            description="AWS region for AgentCore Memory"
+            description="AWS region for AgentCore Memory",
         )
-        
+
         # Create image tag parameters with default values (updated by CodeBuild)
         agents = ["orchestrator", "vision", "document", "data", "tool", "voice"]
         for agent_name in agents:
@@ -209,7 +179,7 @@ class AgentCoreStack(Stack):
                 f"{agent_name.capitalize()}ImageTagParam",
                 parameter_name=f"/agentcore/scaffold/{env_name}/{agent_name}-image-tag",
                 string_value="latest",  # Default, updated by CodeBuild
-                description=f"Image tag for {agent_name} agent (updated by CodeBuild)"
+                description=f"Image tag for {agent_name} agent (updated by CodeBuild)",
             )
 
         # Store references for use by other stacks
@@ -226,9 +196,9 @@ class AgentCoreStack(Stack):
                 "ECRRepositoryURI",
                 value=ecr_repo.repository_uri,
                 description="ECR repository URI for Docker images (legacy, deprecated)",
-                export_name=f"{self.stack_name}-ECRRepositoryURI"
+                export_name=f"{self.stack_name}-ECRRepositoryURI",
             )
-        
+
         # Outputs - Individual ECR repositories
         for agent_name, repo in ecr_repos.items():
             CfnOutput(
@@ -236,7 +206,7 @@ class AgentCoreStack(Stack):
                 f"{agent_name.capitalize()}ECRRepositoryURI",
                 value=repo.repository_uri,
                 description=f"ECR repository URI for {agent_name} agent",
-                export_name=f"{self.stack_name}-{agent_name.capitalize()}ECRRepositoryURI"
+                export_name=f"{self.stack_name}-{agent_name.capitalize()}ECRRepositoryURI",
             )
 
         CfnOutput(
@@ -244,34 +214,23 @@ class AgentCoreStack(Stack):
             "AgentCoreRoleARN",
             value=agentcore_role.role_arn,
             description="IAM role ARN for AgentCore Runtime",
-            export_name=f"{self.stack_name}-AgentCoreRoleARN"
+            export_name=f"{self.stack_name}-AgentCoreRoleARN",
         )
 
         CfnOutput(
             self,
             "GoogleOAuthSecretARN",
             value=google_oauth_secret.secret_arn,
-            description="Secrets Manager ARN for Google OAuth2 credentials"
+            description="Secrets Manager ARN for Google OAuth2 credentials",
         )
 
-        CfnOutput(
-            self,
-            "JWTSecretARN",
-            value=jwt_secret.secret_arn,
-            description="Secrets Manager ARN for JWT secret"
-        )
+        CfnOutput(self, "JWTSecretARN", value=jwt_secret.secret_arn, description="Secrets Manager ARN for JWT secret")
 
         CfnOutput(
             self,
             "AgentAuthSecretARN",
             value=agent_auth_secret.secret_arn,
-            description="Secrets Manager ARN for agent authentication secret"
+            description="Secrets Manager ARN for agent authentication secret",
         )
 
-        CfnOutput(
-            self,
-            "LogGroupName",
-            value=log_group.log_group_name,
-            description="CloudWatch Log Group name"
-        )
-
+        CfnOutput(self, "LogGroupName", value=log_group.log_group_name, description="CloudWatch Log Group name")

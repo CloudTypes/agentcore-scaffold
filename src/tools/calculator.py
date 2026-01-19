@@ -2,17 +2,18 @@
 
 from strands.tools import tool
 
+
 @tool
 def calculator(expression: str) -> float:
     """
     Evaluate a mathematical expression.
-    
+
     Args:
         expression: Mathematical expression to evaluate (e.g., "2 + 2", "sqrt(16)")
-        
+
     Returns:
         Result of the calculation
-        
+
     Examples:
         >>> calculator("2 + 2")
         4.0
@@ -29,10 +30,8 @@ def calculator(expression: str) -> float:
         # consider using a more restrictive expression parser (e.g., ast.literal_eval for literals
         # or a dedicated math expression parser library).
         import math
-        allowed_names = {
-            k: v for k, v in math.__dict__.items() 
-            if not k.startswith("__")
-        }
+
+        allowed_names = {k: v for k, v in math.__dict__.items() if not k.startswith("__")}
         result = eval(expression, {"__builtins__": {}}, allowed_names)
         return float(result)
     except Exception as e:

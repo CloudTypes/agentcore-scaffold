@@ -20,17 +20,10 @@ import os
 class CodeBuildStack(Stack):
     """Stack for CodeBuild projects for automated agent builds and deployments."""
 
-    def __init__(
-        self,
-        scope: Construct,
-        construct_id: str,
-        base_stack=None,
-        web_client_stack=None,
-        **kwargs
-    ) -> None:
+    def __init__(self, scope: Construct, construct_id: str, base_stack=None, web_client_stack=None, **kwargs) -> None:
         """
         Initialize CodeBuild stack.
-        
+
         Args:
             scope: Parent construct
             construct_id: Stack ID
@@ -40,7 +33,7 @@ class CodeBuildStack(Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         env_name = self.node.try_get_context("environment") or "dev"
-        
+
         # Get ECR repositories from base stack
         if base_stack:
             ecr_repos = base_stack.ecr_repos
@@ -52,7 +45,7 @@ class CodeBuildStack(Stack):
         cloudfront_distribution_id = None
         if web_client_stack:
             web_bucket = web_client_stack.web_bucket
-            if hasattr(web_client_stack, 'cloudfront_distribution'):
+            if hasattr(web_client_stack, "cloudfront_distribution"):
                 cloudfront_distribution_id = web_client_stack.cloudfront_distribution.distribution_id
 
         # Create IAM role for CodeBuild projects
@@ -61,9 +54,7 @@ class CodeBuildStack(Stack):
             "CodeBuildRole",
             assumed_by=iam.ServicePrincipal("codebuild.amazonaws.com"),
             description="Role for CodeBuild projects to build and deploy agents",
-            managed_policies=[
-                iam.ManagedPolicy.from_aws_managed_policy_name("CloudWatchLogsFullAccess")
-            ]
+            managed_policies=[iam.ManagedPolicy.from_aws_managed_policy_name("CloudWatchLogsFullAccess")],
         )
 
         # Grant ECR permissions
@@ -86,7 +77,7 @@ class CodeBuildStack(Stack):
                     "bedrock-agentcore:UpdateRuntime",
                     "bedrock-agentcore:ListRuntimes",
                 ],
-                resources=["*"]
+                resources=["*"],
             )
         )
 
@@ -101,7 +92,7 @@ class CodeBuildStack(Stack):
                         "cloudfront:GetInvalidation",
                         "cloudfront:ListInvalidations",
                     ],
-                    resources=["*"]
+                    resources=["*"],
                 )
             )
 
@@ -115,7 +106,7 @@ class CodeBuildStack(Stack):
                     "ecr:GetDownloadUrlForLayer",
                     "ecr:BatchGetImage",
                 ],
-                resources=["*"]
+                resources=["*"],
             )
         )
 
@@ -134,39 +125,23 @@ class CodeBuildStack(Stack):
                     compute_type=codebuild.ComputeType.SMALL,
                     privileged=True,  # Required for Docker builds
                 ),
-                build_spec=codebuild.BuildSpec.from_source_filename(
-                    f"buildspecs/buildspec-{agent_name}.yml"
-                ),
+                build_spec=codebuild.BuildSpec.from_source_filename(f"buildspecs/buildspec-{agent_name}.yml"),
                 source=codebuild.Source.git_hub(
                     owner=os.getenv("GITHUB_OWNER", ""),
                     repo=os.getenv("GITHUB_REPO", "agentcore-scaffold"),
                     webhook=True,
                     webhook_filters=[
-                        codebuild.FilterGroup.in_event_of(
-                            codebuild.EventAction.PUSH
-                        ).and_branch_is("main"),  # Production
-                        codebuild.FilterGroup.in_event_of(
-                            codebuild.EventAction.PUSH
-                        ).and_branch_is("develop"),  # Development
+                        codebuild.FilterGroup.in_event_of(codebuild.EventAction.PUSH).and_branch_is("main"),  # Production
+                        codebuild.FilterGroup.in_event_of(codebuild.EventAction.PUSH).and_branch_is("develop"),  # Development
                     ],
                 ),
                 timeout=Duration.minutes(30),
                 environment_variables={
-                    "AGENT_NAME": codebuild.BuildEnvironmentVariable(
-                        value=agent_name
-                    ),
-                    "ENVIRONMENT": codebuild.BuildEnvironmentVariable(
-                        value=env_name
-                    ),
-                    "AWS_REGION": codebuild.BuildEnvironmentVariable(
-                        value=self.region
-                    ),
-                    "AWS_ACCOUNT_ID": codebuild.BuildEnvironmentVariable(
-                        value=self.account
-                    ),
-                    "ECR_REPO_URI": codebuild.BuildEnvironmentVariable(
-                        value=ecr_repos[agent_name].repository_uri
-                    ),
+                    "AGENT_NAME": codebuild.BuildEnvironmentVariable(value=agent_name),
+                    "ENVIRONMENT": codebuild.BuildEnvironmentVariable(value=env_name),
+                    "AWS_REGION": codebuild.BuildEnvironmentVariable(value=self.region),
+                    "AWS_ACCOUNT_ID": codebuild.BuildEnvironmentVariable(value=self.account),
+                    "ECR_REPO_URI": codebuild.BuildEnvironmentVariable(value=ecr_repos[agent_name].repository_uri),
                 },
             )
 
@@ -183,36 +158,22 @@ class CodeBuildStack(Stack):
                     build_image=codebuild.LinuxBuildImage.STANDARD_7_0,
                     compute_type=codebuild.ComputeType.SMALL,
                 ),
-                build_spec=codebuild.BuildSpec.from_source_filename(
-                    "buildspecs/buildspec-web-client.yml"
-                ),
+                build_spec=codebuild.BuildSpec.from_source_filename("buildspecs/buildspec-web-client.yml"),
                 source=codebuild.Source.git_hub(
                     owner=os.getenv("GITHUB_OWNER", ""),
                     repo=os.getenv("GITHUB_REPO", "agentcore-scaffold"),
                     webhook=True,
                     webhook_filters=[
-                        codebuild.FilterGroup.in_event_of(
-                            codebuild.EventAction.PUSH
-                        ).and_branch_is("main"),
-                        codebuild.FilterGroup.in_event_of(
-                            codebuild.EventAction.PUSH
-                        ).and_branch_is("develop"),
+                        codebuild.FilterGroup.in_event_of(codebuild.EventAction.PUSH).and_branch_is("main"),
+                        codebuild.FilterGroup.in_event_of(codebuild.EventAction.PUSH).and_branch_is("develop"),
                     ],
                 ),
                 timeout=Duration.minutes(15),
                 environment_variables={
-                    "ENVIRONMENT": codebuild.BuildEnvironmentVariable(
-                        value=env_name
-                    ),
-                    "AWS_REGION": codebuild.BuildEnvironmentVariable(
-                        value=self.region
-                    ),
-                    "S3_BUCKET": codebuild.BuildEnvironmentVariable(
-                        value=web_bucket.bucket_name
-                    ),
-                    "CLOUDFRONT_DISTRIBUTION_ID": codebuild.BuildEnvironmentVariable(
-                        value=cloudfront_distribution_id or ""
-                    ),
+                    "ENVIRONMENT": codebuild.BuildEnvironmentVariable(value=env_name),
+                    "AWS_REGION": codebuild.BuildEnvironmentVariable(value=self.region),
+                    "S3_BUCKET": codebuild.BuildEnvironmentVariable(value=web_bucket.bucket_name),
+                    "CLOUDFRONT_DISTRIBUTION_ID": codebuild.BuildEnvironmentVariable(value=cloudfront_distribution_id or ""),
                 },
             )
 
@@ -227,7 +188,7 @@ class CodeBuildStack(Stack):
                 self,
                 f"{agent_name.capitalize()}BuildProjectName",
                 value=project.project_name,
-                description=f"CodeBuild project name for {agent_name} agent"
+                description=f"CodeBuild project name for {agent_name} agent",
             )
 
         if web_bucket:
@@ -235,5 +196,5 @@ class CodeBuildStack(Stack):
                 self,
                 "WebClientBuildProjectName",
                 value=web_client_project.project_name,
-                description="CodeBuild project name for web client"
+                description="CodeBuild project name for web client",
             )

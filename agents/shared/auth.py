@@ -15,44 +15,44 @@ from typing import Dict, Any
 class InterAgentAuth:
     """
     Authentication stub for agent-to-agent communication.
-    
+
     This is a minimal implementation for backward compatibility with tests.
     In production, authentication is handled by AgentCore Runtime.
     """
-    
+
     def __init__(self):
         """Initialize authentication handler."""
         self.secret_key = os.getenv("AGENT_AUTH_SECRET", "test-secret-key-for-testing-only")
         self.algorithm = "HS256"
         self.token_expiry_minutes = 5
-    
+
     def create_token(self, agent_name: str) -> str:
         """
         Create JWT token for agent-to-agent calls.
-        
+
         Args:
             agent_name: Name of the calling agent
-            
+
         Returns:
             JWT token string
         """
         payload = {
             "agent_name": agent_name,
             "exp": datetime.utcnow() + timedelta(minutes=self.token_expiry_minutes),
-            "iat": datetime.utcnow()
+            "iat": datetime.utcnow(),
         }
         return jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
-    
+
     def verify_token(self, token: str) -> Dict[str, Any]:
         """
         Verify JWT token from another agent.
-        
+
         Args:
             token: JWT token string
-            
+
         Returns:
             Decoded token payload
-            
+
         Raises:
             ValueError: If token is invalid or expired
         """

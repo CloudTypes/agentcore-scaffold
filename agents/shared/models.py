@@ -7,6 +7,7 @@ from datetime import datetime
 
 class AgentRequest(BaseModel):
     """Standard request format for A2A communication."""
+
     message: str
     context: List[Dict[str, str]] = []
     user_id: str
@@ -17,6 +18,7 @@ class AgentRequest(BaseModel):
 
 class AgentResponse(BaseModel):
     """Standard response format for A2A communication."""
+
     content: str
     agent_name: str
     processing_time_ms: float
@@ -26,8 +28,8 @@ class AgentResponse(BaseModel):
 
 class HealthCheckResponse(BaseModel):
     """Health check response."""
+
     status: str
     agent_name: str
     version: str
     timestamp: datetime = Field(default_factory=datetime.utcnow)
-

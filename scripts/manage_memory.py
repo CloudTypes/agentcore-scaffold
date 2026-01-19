@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 # Load .env file from project root
 script_dir = Path(__file__).parent
 project_root = script_dir.parent
-env_file = project_root / '.env'
+env_file = project_root / ".env"
 if env_file.exists():
     load_dotenv(env_file)
 
@@ -34,14 +34,17 @@ except ImportError:
 # Get region from environment or default - check AGENTCORE_MEMORY_REGION first
 REGION = os.getenv("AGENTCORE_MEMORY_REGION") or os.getenv("AWS_REGION") or "us-east-1"
 
+
 # Initialize clients (will be recreated if region changes)
 def get_ssm_client(region=None):
     """Get SSM client for specified region."""
     return boto3.client("ssm", region_name=region or REGION)
 
+
 def get_secrets_client(region=None):
     """Get Secrets Manager client for specified region."""
     return boto3.client("secretsmanager", region_name=region or REGION)
+
 
 # Default clients for current region
 ssm = get_ssm_client()
@@ -60,31 +63,21 @@ def store_memory_id(memory_id: str):
     """Store memory ID in both SSM and Secrets Manager."""
     try:
         # Store in SSM
-        ssm.put_parameter(
-            Name=SSM_PARAM,
-            Value=memory_id,
-            Type="String",
-            Overwrite=True
-        )
+        ssm.put_parameter(Name=SSM_PARAM, Value=memory_id, Type="String", Overwrite=True)
         click.echo(f"🔐 Stored memory_id in SSM: {SSM_PARAM}")
     except Exception as e:
         click.echo(f"⚠️  Failed to store in SSM: {e}")
-    
+
     try:
         # Store in Secrets Manager
         try:
             secrets_client.create_secret(
-                Name=SECRET_NAME,
-                SecretString=json.dumps({"memory_id": memory_id}),
-                Description="AgentCore Memory resource ID"
+                Name=SECRET_NAME, SecretString=json.dumps({"memory_id": memory_id}), Description="AgentCore Memory resource ID"
             )
             click.echo(f"🔐 Created memory_id in Secrets Manager: {SECRET_NAME}")
         except ClientError as e:
-            if e.response['Error']['Code'] == 'ResourceExistsException':
-                secrets_client.update_secret(
-                    SecretId=SECRET_NAME,
-                    SecretString=json.dumps({"memory_id": memory_id})
-                )
+            if e.response["Error"]["Code"] == "ResourceExistsException":
+                secrets_client.update_secret(SecretId=SECRET_NAME, SecretString=json.dumps({"memory_id": memory_id}))
                 click.echo(f"🔐 Updated memory_id in Secrets Manager: {SECRET_NAME}")
             else:
                 raise
@@ -95,33 +88,33 @@ def store_memory_id(memory_id: str):
 def get_memory_id(show_debug=False, region=None):
     """Get memory ID from environment variable, SSM, or Secrets Manager."""
     check_region = region or REGION
-    
+
     # First, try environment variables (useful for direct testing)
     memory_arn = os.getenv("AGENTCORE_MEMORY_ARN", "")
     memory_id_env = os.getenv("AGENTCORE_MEMORY_ID", "")
-    
+
     if memory_arn:
         memory_id = get_memory_id_from_arn(memory_arn)
         if show_debug:
             click.echo(f"🔍 Looking for memory ID in region: {check_region}")
             click.echo(f"   ✅ Found in environment variable AGENTCORE_MEMORY_ARN: {memory_id}")
         return memory_id
-    
+
     if memory_id_env:
         if show_debug:
             click.echo(f"🔍 Looking for memory ID in region: {check_region}")
             click.echo(f"   ✅ Found in environment variable AGENTCORE_MEMORY_ID: {memory_id_env}")
         return memory_id_env
-    
+
     # Fall back to SSM and Secrets Manager
     ssm_client = get_ssm_client(check_region)
     secrets_mgr_client = get_secrets_client(check_region)
-    
+
     if show_debug:
         click.echo(f"🔍 Looking for memory ID in region: {check_region}")
         click.echo(f"   SSM Parameter: {SSM_PARAM}")
         click.echo(f"   Secrets Manager: {SECRET_NAME}")
-    
+
     # Try SSM first
     try:
         if show_debug:
@@ -133,8 +126,8 @@ def get_memory_id(show_debug=False, region=None):
         return memory_id
     except ClientError as e:
         if show_debug:
-            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
-            error_msg = e.response.get('Error', {}).get('Message', '')
+            error_code = e.response.get("Error", {}).get("Code", "Unknown")
+            error_msg = e.response.get("Error", {}).get("Message", "")
             click.echo(f"   ❌ SSM error: {error_code}")
             if error_msg:
                 click.echo(f"      {error_msg}")
@@ -150,8 +143,8 @@ def get_memory_id(show_debug=False, region=None):
             return memory_id
         except ClientError as e2:
             if show_debug:
-                error_code = e2.response.get('Error', {}).get('Code', 'Unknown')
-                error_msg = e2.response.get('Error', {}).get('Message', '')
+                error_code = e2.response.get("Error", {}).get("Code", "Unknown")
+                error_msg = e2.response.get("Error", {}).get("Message", "")
                 click.echo(f"   ❌ Secrets Manager error: {error_code}")
                 if error_msg:
                     click.echo(f"      {error_msg}")
@@ -204,23 +197,23 @@ def create():
             StrategyType.SUMMARY.value: {
                 "name": "SessionSummarizer",
                 "description": "Captures summaries of conversations",
-                "namespaces": ["/summaries/{actorId}/{sessionId}"]
+                "namespaces": ["/summaries/{actorId}/{sessionId}"],
             }
         },
         {
             StrategyType.USER_PREFERENCE.value: {
                 "name": "UserPreferences",
                 "description": "Captures user preferences and behavior",
-                "namespaces": ["/preferences/{actorId}"]
+                "namespaces": ["/preferences/{actorId}"],
             }
         },
         {
             StrategyType.SEMANTIC.value: {
                 "name": "SemanticMemory",
                 "description": "Stores factual information using vector embeddings",
-                "namespaces": ["/semantic/{actorId}"]
+                "namespaces": ["/semantic/{actorId}"],
             }
-        }
+        },
     ]
 
     try:
@@ -229,7 +222,7 @@ def create():
             name=MEMORY_NAME,
             strategies=strategies,
             description="Memory resource for voice agent with short-term and long-term memory",
-            event_expiry_days=EVENT_EXPIRY_DAYS
+            event_expiry_days=EVENT_EXPIRY_DAYS,
         )
         memory_id = memory.get("memoryId") or memory.get("id")
         click.echo(f"✅ Memory created successfully: {memory_id}")
@@ -239,12 +232,7 @@ def create():
             click.echo("📋 Memory already exists, finding existing resource...")
             control_plane = MemoryControlPlaneClient(region_name=REGION)
             memories = control_plane.list_memories()
-            memory_id = next(
-                (m.get("memoryId") or m.get("id") 
-                 for m in memories 
-                 if MEMORY_NAME in m.get("name", "")), 
-                None
-            )
+            memory_id = next((m.get("memoryId") or m.get("id") for m in memories if MEMORY_NAME in m.get("name", "")), None)
             if memory_id:
                 click.echo(f"✅ Using existing memory: {memory_id}")
             else:
@@ -253,6 +241,7 @@ def create():
         else:
             click.echo(f"❌ Error creating memory: {str(e)}", err=True)
             import traceback
+
             traceback.print_exc()
             sys.exit(1)
 
@@ -272,7 +261,7 @@ def create():
 def delete(confirm):
     """Delete the AgentCore memory resource."""
     memory_id = get_memory_id(show_debug=True)
-    
+
     if not memory_id:
         click.echo("")
         click.echo("❌ No memory ID found in SSM or Secrets Manager", err=True)
@@ -282,9 +271,7 @@ def delete(confirm):
         sys.exit(1)
 
     if not confirm:
-        if not click.confirm(
-            f"⚠️  Are you sure you want to delete memory {memory_id}? This action cannot be undone."
-        ):
+        if not click.confirm(f"⚠️  Are you sure you want to delete memory {memory_id}? This action cannot be undone."):
             click.echo("❌ Operation cancelled")
             sys.exit(0)
 
@@ -306,10 +293,7 @@ def delete(confirm):
         click.echo(f"⚠️  Failed to delete SSM parameter: {e}")
 
     try:
-        secrets_client.delete_secret(
-            SecretId=SECRET_NAME,
-            ForceDeleteWithoutRecovery=True
-        )
+        secrets_client.delete_secret(SecretId=SECRET_NAME, ForceDeleteWithoutRecovery=True)
         click.echo(f"🧹 Deleted Secrets Manager secret: {SECRET_NAME}")
     except Exception as e:
         click.echo(f"⚠️  Failed to delete Secrets Manager secret: {e}")
@@ -321,12 +305,12 @@ def delete(confirm):
 def status():
     """Check the status of the memory resource."""
     import json
-    
+
     click.echo(f"🔍 Checking memory status in region: {REGION}")
     click.echo("")
-    
+
     memory_id = get_memory_id(show_debug=True)
-    
+
     if not memory_id:
         click.echo("")
         click.echo("❌ No memory ID found in SSM or Secrets Manager")
@@ -344,11 +328,11 @@ def status():
         sys.exit(1)
 
     click.echo(f"📋 Memory ID: {memory_id}")
-    
+
     try:
         control_plane = MemoryControlPlaneClient(region_name=REGION)
         memory = control_plane.get_memory(memory_id=memory_id)
-        
+
         strategies = memory.get("strategies", [])
         click.echo(f"📊 Strategies: {len(strategies)}")
         if strategies:
@@ -358,11 +342,12 @@ def status():
                 click.echo(f"   - {strategy_type}: {', '.join(namespaces)}")
         else:
             click.echo("   ⚠️  No strategies configured!")
-        
+
         click.echo("✅ Memory is active and configured")
     except Exception as e:
         click.echo(f"❌ Error checking memory status: {str(e)}", err=True)
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 
@@ -381,7 +366,7 @@ def query_session(actor_id, session_id, try_all_namespaces, memory_id):
         click.echo(f"💡 Using provided memory ID: {memory_id}")
     else:
         memory_id = get_memory_id(show_debug=True)
-    
+
     if not memory_id:
         click.echo("")
         click.echo("❌ No memory ID found in SSM or Secrets Manager", err=True)
@@ -396,91 +381,88 @@ def query_session(actor_id, session_id, try_all_namespaces, memory_id):
         click.echo("  2. Set AWS_REGION or AGENTCORE_MEMORY_REGION in .env file")
         click.echo("  3. Run 'python scripts/manage_memory.py create' to create memory")
         sys.exit(1)
-    
+
     # Sanitize actor_id
     sanitized_actor_id = sanitize_actor_id(actor_id)
-    
+
     # Try different namespace patterns
     namespaces_to_try = [
         f"/summaries/{sanitized_actor_id}/{session_id}",  # Expected pattern
     ]
-    
+
     if try_all_namespaces:
         # Also try with unsanitized actor_id (in case AgentCore uses raw value)
-        namespaces_to_try.extend([
-            f"/summaries/{actor_id}/{session_id}",
-            f"/summaries/{actor_id.replace('@', '_')}/{session_id}",
-        ])
-    
+        namespaces_to_try.extend(
+            [
+                f"/summaries/{actor_id}/{session_id}",
+                f"/summaries/{actor_id.replace('@', '_')}/{session_id}",
+            ]
+        )
+
     click.echo(f"🔍 Querying session: {session_id}")
     click.echo(f"👤 Actor: {actor_id} (sanitized: {sanitized_actor_id})")
     click.echo(f"💾 Memory ID: {memory_id}")
     click.echo(f"🌍 Region: {REGION}")
     click.echo("")
-    
+
     client = MemoryClient(region_name=REGION)
     records_found = False
-    
+
     for namespace in namespaces_to_try:
         click.echo(f"📍 Trying namespace: {namespace}")
         # Try multiple query terms - summaries contain conversation topics
         # Based on logs, summaries have topics like "Initial Greeting"
         query_terms = [
-            "greeting",      # From logs: "Initial Greeting"
-            "initial",       # Topic name
+            "greeting",  # From logs: "Initial Greeting"
+            "initial",  # Topic name
             "conversation",  # Generic term
-            "user",          # User interactions
-            "assistant",     # Assistant responses
-            "hello",         # Common greeting word
-            "help",          # Common request
+            "user",  # User interactions
+            "assistant",  # Assistant responses
+            "hello",  # Common greeting word
+            "help",  # Common request
         ]
         records = []
-        
+
         try:
             # First, try ListMemoryRecords (no semantic search required)
             # This is the recommended approach for listing all records in a namespace
-            bedrock_client = boto3.client('bedrock-agentcore', region_name=REGION)
-            
+            bedrock_client = boto3.client("bedrock-agentcore", region_name=REGION)
+
             # Try the exact namespace first
             try:
                 # Note: ListMemoryRecords might have a delay after record creation
                 # CloudWatch logs show records are created, but there may be an indexing delay
                 # before they're queryable via ListMemoryRecords
-                
+
                 response = bedrock_client.list_memory_records(
-                    memoryId=memory_id,
-                    namespace=namespace,
-                    maxResults=100  # Increased to catch more records
+                    memoryId=memory_id, namespace=namespace, maxResults=100  # Increased to catch more records
                 )
-                
+
                 found_records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
                 # Add namespace to each record (since it's not in the response)
                 for record in found_records:
-                    if isinstance(record, dict) and 'namespace' not in record:
-                        record['namespace'] = namespace
-                
+                    if isinstance(record, dict) and "namespace" not in record:
+                        record["namespace"] = namespace
+
                 # Handle pagination if there's a nextToken
                 next_token = response.get("nextToken")
                 while next_token:
                     try:
                         next_response = bedrock_client.list_memory_records(
-                            memoryId=memory_id,
-                            namespace=namespace,
-                            maxResults=100,
-                            nextToken=next_token
+                            memoryId=memory_id, namespace=namespace, maxResults=100, nextToken=next_token
                         )
                         new_records = next_response.get("memoryRecordSummaries", next_response.get("memoryRecords", []))
                         # Add namespace to each new record
                         for record in new_records:
-                            if isinstance(record, dict) and 'namespace' not in record:
-                                record['namespace'] = namespace
+                            if isinstance(record, dict) and "namespace" not in record:
+                                record["namespace"] = namespace
                         found_records.extend(new_records)
                         next_token = next_response.get("nextToken")
                         if not new_records:
                             break
                     except Exception:
                         break
-                
+
                 # Debug: Show what we got
                 if found_records:
                     click.echo(f"   🔍 Debug: Found {len(found_records)} record(s), checking namespaces...")
@@ -488,55 +470,51 @@ def query_session(actor_id, session_id, try_all_namespaces, memory_id):
                         rec_ns = rec.get("namespace", "N/A")
                         rec_id = rec.get("memoryRecordId", rec.get("recordId", "N/A"))
                         click.echo(f"      - Record ID: {rec_id}, Namespace: {rec_ns}")
-                
+
                 # If no records found, try GetMemoryRecord API if we have a record ID from logs
                 # Note: This would require the record ID, which we don't have from the query
                 # But we can check if there's a way to list all records and filter
-                
+
                 if found_records:
                     records = found_records
                     click.echo(f"   ✅ Found {len(records)} record(s) using ListMemoryRecords")
                 else:
                     click.echo(f"   ❌ No records found with ListMemoryRecords in exact namespace")
                     click.echo(f"   💡 Note: There may be an indexing delay (records can take 1-2 minutes to appear)")
-                    
+
                     # Try parent namespace (without session ID)
                     parent_namespace = f"/summaries/{sanitized_actor_id}"
                     click.echo(f"   🔄 Trying parent namespace: {parent_namespace}")
                     try:
                         all_parent_records = []
                         next_token = None
-                        
+
                         while True:
-                            params = {
-                                "memoryId": memory_id,
-                                "namespace": parent_namespace,
-                                "maxResults": 100
-                            }
+                            params = {"memoryId": memory_id, "namespace": parent_namespace, "maxResults": 100}
                             if next_token:
                                 params["nextToken"] = next_token
-                            
+
                             response = bedrock_client.list_memory_records(**params)
                             parent_records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
                             # Add namespace to each record (since it's not in the response)
                             for record in parent_records:
-                                if isinstance(record, dict) and 'namespace' not in record:
-                                    record['namespace'] = parent_namespace
+                                if isinstance(record, dict) and "namespace" not in record:
+                                    record["namespace"] = parent_namespace
                             all_parent_records.extend(parent_records)
-                            
+
                             next_token = response.get("nextToken")
                             if not next_token or len(parent_records) == 0:
                                 break
-                        
+
                         click.echo(f"   📊 Found {len(all_parent_records)} total record(s) in parent namespace")
-                        
+
                         # Filter for this session ID
                         matching_records = []
                         for record in all_parent_records:
                             record_ns = record.get("namespace", "")
                             if session_id in record_ns:
                                 matching_records.append(record)
-                        
+
                         if matching_records:
                             records = matching_records
                             click.echo(f"   ✅ Found {len(records)} record(s) matching session ID")
@@ -551,10 +529,12 @@ def query_session(actor_id, session_id, try_all_namespaces, memory_id):
                                     if len(parts) >= 4:
                                         available_sessions.add(parts[-1])
                                 if available_sessions:
-                                    click.echo(f"   💡 Available session IDs in parent namespace: {', '.join(sorted(available_sessions)[:5])}")
+                                    click.echo(
+                                        f"   💡 Available session IDs in parent namespace: {', '.join(sorted(available_sessions)[:5])}"
+                                    )
                     except Exception as e2:
                         click.echo(f"   ⚠️  Parent namespace query failed: {str(e2)[:100]}")
-                    
+
                     # If still no records, try semantic search as fallback
                     if not records:
                         click.echo(f"   🔄 Trying semantic search as fallback...")
@@ -563,10 +543,7 @@ def query_session(actor_id, session_id, try_all_namespaces, memory_id):
                                 response = client.retrieve_memory_records(
                                     memoryId=memory_id,
                                     namespace=namespace,
-                                    searchCriteria={
-                                        "searchQuery": query_term,
-                                        "topK": 1
-                                    }
+                                    searchCriteria={"searchQuery": query_term, "topK": 1},
                                 )
                                 found_records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
                                 if found_records:
@@ -575,7 +552,7 @@ def query_session(actor_id, session_id, try_all_namespaces, memory_id):
                                     break
                             except Exception as e_search:
                                 continue
-                        
+
                         # If still no records, try fallback terms
                         if not records:
                             for fallback_term in ["summary", "session", "memory", "topic"]:
@@ -583,10 +560,7 @@ def query_session(actor_id, session_id, try_all_namespaces, memory_id):
                                     response = client.retrieve_memory_records(
                                         memoryId=memory_id,
                                         namespace=namespace,
-                                        searchCriteria={
-                                            "searchQuery": fallback_term,
-                                            "topK": 1
-                                        }
+                                        searchCriteria={"searchQuery": fallback_term, "topK": 1},
                                     )
                                     found_records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
                                     if found_records:
@@ -599,17 +573,12 @@ def query_session(actor_id, session_id, try_all_namespaces, memory_id):
                 error_msg = str(e)
                 click.echo(f"   ⚠️  ListMemoryRecords failed: {error_msg[:100]}")
                 click.echo(f"   🔄 Falling back to semantic search...")
-                
+
                 # Fallback to semantic search
                 for query_term in query_terms:
                     try:
                         response = client.retrieve_memory_records(
-                            memoryId=memory_id,
-                            namespace=namespace,
-                            searchCriteria={
-                                "searchQuery": query_term,
-                                "topK": 1
-                            }
+                            memoryId=memory_id, namespace=namespace, searchCriteria={"searchQuery": query_term, "topK": 1}
                         )
                         found_records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
                         if found_records:
@@ -618,7 +587,7 @@ def query_session(actor_id, session_id, try_all_namespaces, memory_id):
                             break
                     except Exception as e_search:
                         continue
-                
+
                 # If still no records, try fallback terms
                 if not records:
                     for fallback_term in ["summary", "session", "memory", "topic"]:
@@ -626,10 +595,7 @@ def query_session(actor_id, session_id, try_all_namespaces, memory_id):
                             response = client.retrieve_memory_records(
                                 memoryId=memory_id,
                                 namespace=namespace,
-                                searchCriteria={
-                                    "searchQuery": fallback_term,
-                                    "topK": 1
-                                }
+                                searchCriteria={"searchQuery": fallback_term, "topK": 1},
                             )
                             found_records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
                             if found_records:
@@ -638,7 +604,7 @@ def query_session(actor_id, session_id, try_all_namespaces, memory_id):
                                 break
                         except Exception:
                             continue
-            
+
             if records:
                 records_found = True
                 click.echo(f"✅ Found {len(records)} record(s) in namespace: {namespace}")
@@ -646,7 +612,7 @@ def query_session(actor_id, session_id, try_all_namespaces, memory_id):
                 for i, record in enumerate(records, 1):
                     click.echo(f"--- Record {i} ---")
                     click.echo(f"Namespace: {record.get('namespace', 'N/A')}")
-                    
+
                     content = record.get("content", {})
                     if isinstance(content, dict):
                         text = content.get("text", "")
@@ -657,12 +623,12 @@ def query_session(actor_id, session_id, try_all_namespaces, memory_id):
                             click.echo("Summary: (empty)")
                     else:
                         click.echo(f"Content: {content}")
-                    
+
                     # Show other fields if present
                     metadata = {k: v for k, v in record.items() if k not in ("namespace", "content")}
                     if metadata:
                         click.echo(f"Metadata: {json.dumps(metadata, indent=2)}")
-                    
+
                     if i < len(records):
                         click.echo("")
                 break  # Found records, stop trying other namespaces
@@ -670,7 +636,7 @@ def query_session(actor_id, session_id, try_all_namespaces, memory_id):
                 click.echo(f"  ❌ No records in this namespace")
         except Exception as e:
             click.echo(f"  ⚠️  Error querying namespace: {str(e)}")
-    
+
     if not records_found:
         click.echo("")
         click.echo("❌ No records found in any namespace")
@@ -715,63 +681,59 @@ def list_namespaces(actor_id, namespace_prefix, top_k, use_list_api, memory_id):
         click.echo(f"💡 Using provided memory ID: {memory_id}")
     else:
         memory_id = get_memory_id(show_debug=True)
-    
+
     if not memory_id:
         click.echo("")
         click.echo("❌ No memory ID found in SSM or Secrets Manager", err=True)
         sys.exit(1)
-    
+
     # Sanitize actor_id
     sanitized_actor_id = sanitize_actor_id(actor_id)
-    
+
     # Try different namespace patterns
     namespaces_to_try = [
         f"{namespace_prefix}/{sanitized_actor_id}",
         f"{namespace_prefix}/{actor_id}",
     ]
-    
+
     click.echo("")
     click.echo(f"🔍 Searching for records in namespace prefix: {namespace_prefix}")
     click.echo(f"👤 Actor: {actor_id} (sanitized: {sanitized_actor_id})")
     click.echo(f"💾 Memory ID: {memory_id}")
     click.echo(f"🌍 Region: {REGION}")
     click.echo("")
-    
+
     client = MemoryClient(region_name=REGION)
     total_records = 0
-    
-    bedrock_client = boto3.client('bedrock-agentcore', region_name=REGION)
-    
+
+    bedrock_client = boto3.client("bedrock-agentcore", region_name=REGION)
+
     for namespace in namespaces_to_try:
         click.echo(f"📍 Querying namespace: {namespace}")
-        
+
         # If use_list_api flag is set (or always for summaries/preferences), try ListMemoryRecords first
         if use_list_api or namespace_prefix in ["/summaries", "/preferences"]:
             try:
                 all_records = []
                 next_token = None
-                
+
                 while len(all_records) < top_k:
-                    params = {
-                        "memoryId": memory_id,
-                        "namespace": namespace,
-                        "maxResults": min(100, top_k - len(all_records))
-                    }
+                    params = {"memoryId": memory_id, "namespace": namespace, "maxResults": min(100, top_k - len(all_records))}
                     if next_token:
                         params["nextToken"] = next_token
-                    
+
                     response = bedrock_client.list_memory_records(**params)
                     records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
                     # Add namespace to each record (since it's not in the response)
                     for record in records:
-                        if isinstance(record, dict) and 'namespace' not in record:
-                            record['namespace'] = namespace
+                        if isinstance(record, dict) and "namespace" not in record:
+                            record["namespace"] = namespace
                     all_records.extend(records)
-                    
+
                     next_token = response.get("nextToken")
                     if not next_token or len(records) == 0:
                         break
-                
+
                 if all_records:
                     total_records += len(all_records)
                     click.echo(f"   ✅ Found {len(all_records)} record(s) using ListMemoryRecords")
@@ -789,21 +751,16 @@ def list_namespaces(actor_id, namespace_prefix, top_k, use_list_api, memory_id):
                     click.echo(f"   ❌ No records with ListMemoryRecords")
             except Exception as e:
                 click.echo(f"   ⚠️  ListMemoryRecords failed: {str(e)[:100]}")
-        
+
         # Fallback to semantic search
         try:
             # Use a very broad query to get any records
             response = client.retrieve_memory_records(
-                memoryId=memory_id,
-                namespace=namespace,
-                searchCriteria={
-                    "searchQuery": "*",  # Try wildcard
-                    "topK": top_k
-                }
+                memoryId=memory_id, namespace=namespace, searchCriteria={"searchQuery": "*", "topK": top_k}  # Try wildcard
             )
-            
+
             records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
-            
+
             if records:
                 total_records += len(records)
                 click.echo(f"   ✅ Found {len(records)} record(s)")
@@ -826,10 +783,7 @@ def list_namespaces(actor_id, namespace_prefix, top_k, use_list_api, memory_id):
                     response = client.retrieve_memory_records(
                         memoryId=memory_id,
                         namespace=namespace,
-                        searchCriteria={
-                            "searchQuery": "summary",  # Try generic term
-                            "topK": top_k
-                        }
+                        searchCriteria={"searchQuery": "summary", "topK": top_k},  # Try generic term
                     )
                     records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
                     if records:
@@ -844,7 +798,7 @@ def list_namespaces(actor_id, namespace_prefix, top_k, use_list_api, memory_id):
                     click.echo(f"   ⚠️  Error: {str(e2)[:100]}")
             else:
                 click.echo(f"   ⚠️  Error: {error_msg[:100]}")
-    
+
     click.echo("")
     if total_records > 0:
         click.echo(f"✅ Total records found: {total_records}")
@@ -873,12 +827,12 @@ def list_all_records(top_k, memory_id):
         click.echo(f"💡 Using provided memory ID: {memory_id}")
     else:
         memory_id = get_memory_id(show_debug=True)
-    
+
     if not memory_id:
         click.echo("")
         click.echo("❌ No memory ID found in SSM or Secrets Manager", err=True)
         sys.exit(1)
-    
+
     click.echo("")
     click.echo(f"🔍 Listing ALL memory records (up to {top_k})")
     click.echo(f"💾 Memory ID: {memory_id}")
@@ -887,44 +841,39 @@ def list_all_records(top_k, memory_id):
     click.echo("⚠️  Note: This queries common namespace patterns. If records are in")
     click.echo("   unexpected namespaces, they may not appear here.")
     click.echo("")
-    
+
     client = MemoryClient(region_name=REGION)
     all_records = []
     namespaces_checked = []
-    
+
     # Common namespace patterns to check
     namespace_patterns = [
         "/summaries",  # Root summaries
         "/preferences",  # Root preferences
         "/semantic",  # Root semantic
     ]
-    
+
     # Also try with common actor ID patterns
     common_actor_patterns = [
         "nathan_cloudtypes_io",
         "nathan@cloudtypes.io",
         "nathan.cloudtypes.io",
     ]
-    
+
     # Known session ID from user's logs
     known_session_id = "120f7fbd-42c1-4397-a24b-244e7ad9a02f"
-    
+
     # Try different query terms that might match summaries
     # Use terms from the actual conversation
     query_terms = ["summary", "conversation", "session", "user", "weather", "denver", "colorado", "hello", "help"]
-    
+
     for base_ns in namespace_patterns:
         # Try root namespace with different queries
         for query_term in query_terms:
             namespaces_checked.append(f"{base_ns} (query: {query_term})")
             try:
                 response = client.retrieve_memory_records(
-                    memoryId=memory_id,
-                    namespace=base_ns,
-                    searchCriteria={
-                        "searchQuery": query_term,
-                        "topK": top_k
-                    }
+                    memoryId=memory_id, namespace=base_ns, searchCriteria={"searchQuery": query_term, "topK": top_k}
                 )
                 records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
                 if records:
@@ -943,7 +892,7 @@ def list_all_records(top_k, memory_id):
                     # Can't query root namespace, skip
                     break
                 # Continue trying other query terms
-        
+
         # Try with actor ID patterns
         for actor_pattern in common_actor_patterns:
             ns = f"{base_ns}/{actor_pattern}"
@@ -951,12 +900,7 @@ def list_all_records(top_k, memory_id):
                 namespaces_checked.append(f"{ns} (query: {query_term})")
                 try:
                     response = client.retrieve_memory_records(
-                        memoryId=memory_id,
-                        namespace=ns,
-                        searchCriteria={
-                            "searchQuery": query_term,
-                            "topK": top_k
-                        }
+                        memoryId=memory_id, namespace=ns, searchCriteria={"searchQuery": query_term, "topK": top_k}
                     )
                     records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
                     if records:
@@ -973,7 +917,7 @@ def list_all_records(top_k, memory_id):
                         # Invalid namespace pattern, skip this actor pattern
                         break
                     # Continue trying other query terms
-    
+
     # Also try querying the known session ID namespace directly
     click.echo("")
     click.echo("🔍 Trying known session ID namespace...")
@@ -982,12 +926,7 @@ def list_all_records(top_k, memory_id):
         for query_term in query_terms:
             try:
                 response = client.retrieve_memory_records(
-                    memoryId=memory_id,
-                    namespace=ns,
-                    searchCriteria={
-                        "searchQuery": query_term,
-                        "topK": top_k
-                    }
+                    memoryId=memory_id, namespace=ns, searchCriteria={"searchQuery": query_term, "topK": top_k}
                 )
                 records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
                 if records:
@@ -1008,7 +947,7 @@ def list_all_records(top_k, memory_id):
                 if "ValidationException" in error_msg and "namespace" in error_msg.lower():
                     break
                 # Continue trying other query terms
-    
+
     click.echo("")
     if all_records:
         # Group by namespace
@@ -1018,14 +957,14 @@ def list_all_records(top_k, memory_id):
             if ns not in by_namespace:
                 by_namespace[ns] = []
             by_namespace[ns].append(record)
-        
+
         click.echo(f"📊 Summary: Found {len(all_records)} total records in {len(by_namespace)} unique namespaces")
         click.echo("")
         click.echo("Namespaces with records:")
         for ns in sorted(by_namespace.keys()):
             count = len(by_namespace[ns])
             click.echo(f"  • {ns}: {count} record(s)")
-            
+
             # Show a sample record
             sample = by_namespace[ns][0]
             content = sample.get("content", {})
@@ -1059,15 +998,15 @@ def debug_memory(actor_id, session_id, memory_id):
         click.echo(f"💡 Using provided memory ID: {memory_id}")
     else:
         memory_id = get_memory_id(show_debug=True)
-    
+
     if not memory_id:
         click.echo("")
         click.echo("❌ No memory ID found in SSM or Secrets Manager", err=True)
         sys.exit(1)
-    
+
     sanitized_actor_id = sanitize_actor_id(actor_id)
-    bedrock_client = boto3.client('bedrock-agentcore', region_name=REGION)
-    
+    bedrock_client = boto3.client("bedrock-agentcore", region_name=REGION)
+
     click.echo("")
     click.echo("🔍 Debugging memory records")
     click.echo(f"👤 Actor: {actor_id} (sanitized: {sanitized_actor_id})")
@@ -1076,46 +1015,42 @@ def debug_memory(actor_id, session_id, memory_id):
     if session_id:
         click.echo(f"📋 Session ID: {session_id}")
     click.echo("")
-    
+
     # Try different namespace levels
     namespaces_to_try = [
         f"/summaries/{sanitized_actor_id}",
     ]
-    
+
     if session_id:
         namespaces_to_try.insert(0, f"/summaries/{sanitized_actor_id}/{session_id}")
-    
+
     all_records = []
-    
+
     for ns in namespaces_to_try:
         click.echo(f"📍 Testing namespace: {ns}")
-        
+
         # Method 1: ListMemoryRecords with pagination
         try:
             all_list_records = []
             next_token = None
-            
+
             while len(all_list_records) < 100:
-                params = {
-                    "memoryId": memory_id,
-                    "namespace": ns,
-                    "maxResults": 100
-                }
+                params = {"memoryId": memory_id, "namespace": ns, "maxResults": 100}
                 if next_token:
                     params["nextToken"] = next_token
-                
+
                 response = bedrock_client.list_memory_records(**params)
                 records = response.get("memoryRecordSummaries", response.get("memoryRecords", []))
                 # Add namespace to each record (since it's not in the response)
                 for record in records:
-                    if isinstance(record, dict) and 'namespace' not in record:
-                        record['namespace'] = ns
+                    if isinstance(record, dict) and "namespace" not in record:
+                        record["namespace"] = ns
                 all_list_records.extend(records)
-                
+
                 next_token = response.get("nextToken")
                 if not next_token or len(records) == 0:
                     break
-            
+
             click.echo(f"   ListMemoryRecords: {len(all_list_records)} record(s)")
             if all_list_records:
                 for i, record in enumerate(all_list_records[:3], 1):
@@ -1126,7 +1061,7 @@ def debug_memory(actor_id, session_id, memory_id):
                     all_records.append(record)
         except Exception as e:
             click.echo(f"   ListMemoryRecords: Error - {str(e)[:100]}")
-        
+
         # Method 2: Try semantic search with various terms
         client = MemoryClient(region_name=REGION)
         search_terms = ["greeting", "conversation", "user", "hello", "initial", "topic", "weather", "square root", "colorado"]
@@ -1134,12 +1069,7 @@ def debug_memory(actor_id, session_id, memory_id):
         for term in search_terms:
             try:
                 response = client.retrieve_memory_records(
-                    memoryId=memory_id,
-                    namespace=ns,
-                    searchCriteria={
-                        "searchQuery": term,
-                        "topK": 10
-                    }
+                    memoryId=memory_id, namespace=ns, searchCriteria={"searchQuery": term, "topK": 10}
                 )
                 records = response.get("memoryRecords", [])
                 if records:
@@ -1153,10 +1083,10 @@ def debug_memory(actor_id, session_id, memory_id):
                     break
             except Exception as e:
                 continue
-        
+
         if not semantic_found:
             click.echo(f"   Semantic search: No records found with any query term")
-    
+
     click.echo("")
     if all_records:
         click.echo(f"✅ Total unique records found: {len(all_records)}")
@@ -1183,4 +1113,3 @@ def debug_memory(actor_id, session_id, memory_id):
 
 if __name__ == "__main__":
     cli()
-

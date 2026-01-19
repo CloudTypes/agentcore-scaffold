@@ -10,7 +10,7 @@ def test_cdk_stack_synthesis():
     # For now, just verify the stack file exists and is importable
     import sys
     import os
-    
+
     cdk_path = os.path.join(os.path.dirname(__file__), "..", "..", "infrastructure", "cdk")
     if os.path.exists(cdk_path):
         # Stack file should be importable
@@ -22,13 +22,9 @@ def test_cdk_stack_synthesis():
 def test_cdk_json_valid():
     """Test that cdk.json is valid JSON."""
     import os
-    
-    cdk_json_path = os.path.join(
-        os.path.dirname(__file__),
-        "..", "..",
-        "infrastructure", "cdk", "cdk.json"
-    )
-    
+
+    cdk_json_path = os.path.join(os.path.dirname(__file__), "..", "..", "infrastructure", "cdk", "cdk.json")
+
     if os.path.exists(cdk_json_path):
         with open(cdk_json_path) as f:
             data = json.load(f)
@@ -36,4 +32,3 @@ def test_cdk_json_valid():
             assert "context" in data
     else:
         pytest.skip("cdk.json not found")
-

@@ -20,16 +20,10 @@ import os
 class MultiAgentStack(Stack):
     """Stack for deploying multi-agent system to AgentCore Runtime with A2A protocol."""
 
-    def __init__(
-        self,
-        scope: Construct,
-        construct_id: str,
-        base_stack=None,
-        **kwargs
-    ) -> None:
+    def __init__(self, scope: Construct, construct_id: str, base_stack=None, **kwargs) -> None:
         """
         Initialize Multi-Agent stack.
-        
+
         Args:
             scope: Parent construct
             construct_id: Stack ID
@@ -39,7 +33,7 @@ class MultiAgentStack(Stack):
 
         # Get ECR repositories from base stack or context
         env_name = self.node.try_get_context("environment") or "dev"
-        
+
         if base_stack:
             ecr_repos = base_stack.ecr_repos
             agentcore_role = base_stack.agentcore_role
@@ -50,20 +44,18 @@ class MultiAgentStack(Stack):
                 # Create a dict with single repo for backward compatibility
                 ecr_repos = {
                     "orchestrator": ecr.Repository.from_repository_attributes(
-                        self, "ECRRepo",
+                        self,
+                        "ECRRepo",
                         repository_arn=f"arn:aws:ecr:{self.region}:{self.account}:repository/agentcore-scaffold-orchestrator",
-                        repository_name="agentcore-scaffold-orchestrator"
+                        repository_name="agentcore-scaffold-orchestrator",
                     )
                 }
             else:
                 raise ValueError("ECR repositories are required. Provide base_stack or set ecr_repo_uri in context.")
-            
+
             role_arn = self.node.try_get_context("agentcore_role_arn")
             if role_arn:
-                agentcore_role = iam.Role.from_role_arn(
-                    self, "AgentCoreRole",
-                    role_arn=role_arn
-                )
+                agentcore_role = iam.Role.from_role_arn(self, "AgentCoreRole", role_arn=role_arn)
             else:
                 raise ValueError("AgentCore role is required. Provide base_stack or set agentcore_role_arn in context.")
 
@@ -82,7 +74,7 @@ class MultiAgentStack(Stack):
             memory_size=512,
             environment={
                 "REGION": self.region,
-            }
+            },
         )
 
         # Grant permissions to Lambda
@@ -97,7 +89,7 @@ class MultiAgentStack(Stack):
                     "bedrock-agentcore:ListRuntimes",
                     "bedrock-agentcore:InvokeAgent",
                 ],
-                resources=["*"]
+                resources=["*"],
             )
         )
 
@@ -115,24 +107,24 @@ class MultiAgentStack(Stack):
 
         for agent_name in agents:
             runtime_name = f"{agent_name}-agent-{env_name}"
-            
+
             # Get image tag from SSM Parameter Store (updated by CodeBuild)
             # Parameter is created in base stack, reference it here
             image_tag_param = ssm.StringParameter.from_string_parameter_name(
                 self,
                 f"{agent_name.capitalize()}ImageTagParam",
-                string_parameter_name=f"/agentcore/scaffold/{env_name}/{agent_name}-image-tag"
+                string_parameter_name=f"/agentcore/scaffold/{env_name}/{agent_name}-image-tag",
             )
             image_tag = image_tag_param.string_value or self.node.try_get_context("image_tag") or "latest"
-            
+
             # Get ECR repository for this agent
             if agent_name not in ecr_repos:
                 raise ValueError(f"ECR repository for {agent_name} not found in base_stack.ecr_repos")
-            
+
             agent_ecr_repo = ecr_repos[agent_name]
             repo_uri_clean = agent_ecr_repo.repository_uri.replace("https://", "").replace("http://", "")
             image_uri = f"{repo_uri_clean}:{image_tag}"
-            
+
             # Create IAM role for this agent
             agent_role = iam.Role(
                 self,
@@ -140,7 +132,7 @@ class MultiAgentStack(Stack):
                 assumed_by=iam.ServicePrincipal("bedrock.amazonaws.com"),
                 description=f"IAM role for {agent_name} agent",
             )
-            
+
             # Grant Bedrock permissions
             agent_role.add_to_policy(
                 iam.PolicyStatement(
@@ -149,10 +141,10 @@ class MultiAgentStack(Stack):
                         "bedrock:InvokeModel",
                         "bedrock:InvokeModelWithResponseStream",
                     ],
-                    resources=["*"]
+                    resources=["*"],
                 )
             )
-            
+
             # Grant Memory permissions
             agent_role.add_to_policy(
                 iam.PolicyStatement(
@@ -162,9 +154,9 @@ class MultiAgentStack(Stack):
                         "bedrock-agentcore:GetMemory",
                         "bedrock-agentcore:CreateEvent",
                         "bedrock-agentcore:RetrieveMemoryRecords",
-                        "bedrock-agentcore:ListMemoryRecords"
+                        "bedrock-agentcore:ListMemoryRecords",
                     ],
-                    resources=["*"]
+                    resources=["*"],
                 )
             )
 
@@ -180,7 +172,7 @@ class MultiAgentStack(Stack):
                     "Region": self.region,
                     "Protocol": "A2A",  # Use A2A protocol
                     "Port": "9000",
-                }
+                },
             )
 
             agent_runtimes[agent_name] = runtime
@@ -192,7 +184,7 @@ class MultiAgentStack(Stack):
                 f"{agent_name.capitalize()}AgentEndpointParam",
                 parameter_name=f"/agentcore/multi-agent/{agent_name}-endpoint",
                 string_value=runtime.get_att_string("Endpoint"),
-                description=f"{agent_name.capitalize()} agent endpoint URL"
+                description=f"{agent_name.capitalize()} agent endpoint URL",
             )
 
             # Output
@@ -200,25 +192,25 @@ class MultiAgentStack(Stack):
                 self,
                 f"{agent_name.capitalize()}AgentEndpoint",
                 value=runtime.get_att_string("Endpoint"),
-                description=f"{agent_name.capitalize()} agent endpoint URL"
+                description=f"{agent_name.capitalize()} agent endpoint URL",
             )
 
         # Deploy orchestrator (depends on specialist agents)
         orchestrator_runtime_name = f"orchestrator-agent-{env_name}"
-        
+
         # Get orchestrator image tag from SSM Parameter Store
         # Parameter is created in base stack, reference it here
         orchestrator_image_tag_param = ssm.StringParameter.from_string_parameter_name(
-            self,
-            "OrchestratorImageTagParam",
-            string_parameter_name=f"/agentcore/scaffold/{env_name}/orchestrator-image-tag"
+            self, "OrchestratorImageTagParam", string_parameter_name=f"/agentcore/scaffold/{env_name}/orchestrator-image-tag"
         )
-        orchestrator_image_tag = orchestrator_image_tag_param.string_value or self.node.try_get_context("image_tag") or "latest"
-        
+        orchestrator_image_tag = (
+            orchestrator_image_tag_param.string_value or self.node.try_get_context("image_tag") or "latest"
+        )
+
         # Get orchestrator ECR repository
         if "orchestrator" not in ecr_repos:
             raise ValueError("ECR repository for orchestrator not found in base_stack.ecr_repos")
-        
+
         orchestrator_ecr_repo = ecr_repos["orchestrator"]
         repo_uri_clean = orchestrator_ecr_repo.repository_uri.replace("https://", "").replace("http://", "")
         orchestrator_image_uri = f"{repo_uri_clean}:{orchestrator_image_tag}"
@@ -239,7 +231,7 @@ class MultiAgentStack(Stack):
                     "bedrock:InvokeModel",
                     "bedrock:InvokeModelWithResponseStream",
                 ],
-                resources=["*"]
+                resources=["*"],
             )
         )
 
@@ -250,7 +242,7 @@ class MultiAgentStack(Stack):
                 actions=[
                     "bedrock-agentcore:InvokeAgent",
                 ],
-                resources=["*"]
+                resources=["*"],
             )
         )
 
@@ -263,9 +255,9 @@ class MultiAgentStack(Stack):
                     "bedrock-agentcore:GetMemory",
                     "bedrock-agentcore:CreateEvent",
                     "bedrock-agentcore:RetrieveMemoryRecords",
-                    "bedrock-agentcore:ListMemoryRecords"
+                    "bedrock-agentcore:ListMemoryRecords",
                 ],
-                resources=["*"]
+                resources=["*"],
             )
         )
 
@@ -281,17 +273,19 @@ class MultiAgentStack(Stack):
                 "Region": self.region,
                 "Protocol": "A2A",  # Use A2A protocol
                 "Port": "9000",
-                "Environment": json.dumps({
-                    "VISION_AGENT_URL": agent_endpoints["vision"],
-                    "DOCUMENT_AGENT_URL": agent_endpoints["document"],
-                    "DATA_AGENT_URL": agent_endpoints["data"],
-                    "TOOL_AGENT_URL": agent_endpoints["tool"],
-                    "AGENTCORE_MEMORY_ID": memory_id or "",
-                    "AGENTCORE_MEMORY_REGION": memory_region,
-                    "AWS_REGION": self.region,
-                    "ENVIRONMENT": "production",
-                })
-            }
+                "Environment": json.dumps(
+                    {
+                        "VISION_AGENT_URL": agent_endpoints["vision"],
+                        "DOCUMENT_AGENT_URL": agent_endpoints["document"],
+                        "DATA_AGENT_URL": agent_endpoints["data"],
+                        "TOOL_AGENT_URL": agent_endpoints["tool"],
+                        "AGENTCORE_MEMORY_ID": memory_id or "",
+                        "AGENTCORE_MEMORY_REGION": memory_region,
+                        "AWS_REGION": self.region,
+                        "ENVIRONMENT": "production",
+                    }
+                ),
+            },
         )
 
         # Add dependencies
@@ -304,7 +298,7 @@ class MultiAgentStack(Stack):
             "OrchestratorAgentEndpointParam",
             parameter_name="/agentcore/multi-agent/orchestrator-endpoint",
             string_value=orchestrator_runtime.get_att_string("Endpoint"),
-            description="Orchestrator agent endpoint URL"
+            description="Orchestrator agent endpoint URL",
         )
 
         # Output
@@ -312,7 +306,7 @@ class MultiAgentStack(Stack):
             self,
             "OrchestratorAgentEndpoint",
             value=orchestrator_runtime.get_att_string("Endpoint"),
-            description="Orchestrator agent endpoint URL"
+            description="Orchestrator agent endpoint URL",
         )
 
     def _get_runtime_handler_code(self) -> str:
@@ -412,4 +406,3 @@ def handler(event, context):
         traceback.print_exc()
         send(event, context, 'FAILED', {}, reason=str(e))
 """
-

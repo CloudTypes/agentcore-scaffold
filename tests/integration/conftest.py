@@ -17,13 +17,14 @@ from threading import Thread
 # Load .env file from project root if it exists
 # This ensures integration tests use the same configuration as the application
 project_root = Path(__file__).parent.parent.parent
-env_file = project_root / '.env'
+env_file = project_root / ".env"
 if env_file.exists():
     from dotenv import load_dotenv
+
     load_dotenv(env_file, override=False)  # Don't override existing env vars
 
 # Add src to path for imports
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 from agent import app
 from strands.experimental.bidi.types.events import (
@@ -32,7 +33,7 @@ from strands.experimental.bidi.types.events import (
     BidiTranscriptStreamEvent,
     BidiAudioStreamEvent,
     BidiResponseCompleteEvent,
-    BidiErrorEvent
+    BidiErrorEvent,
 )
 from strands.types._events import ToolUseStreamEvent, ContentBlockDelta
 
@@ -48,22 +49,23 @@ def sample_pcm_audio():
     """Sample base64-encoded PCM audio data for testing."""
     # Generate a small PCM audio chunk (silence)
     # 16-bit PCM, mono, 16000 Hz, 0.1 seconds = 1600 samples = 3200 bytes
-    pcm_data = b'\x00' * 3200
-    return base64.b64encode(pcm_data).decode('utf-8')
+    pcm_data = b"\x00" * 3200
+    return base64.b64encode(pcm_data).decode("utf-8")
 
 
 @pytest.fixture
 def mock_agent_run():
     """
     Create a mock agent.run() function that simulates agent behavior.
-    
+
     This fixture returns a function that can be configured to send different
     event sequences to the output handler.
     """
+
     async def _mock_agent_run(inputs=None, outputs=None, event_sequence=None):
         """
         Mock implementation of agent.run().
-        
+
         Args:
             inputs: List of input handlers (not used in mock)
             outputs: List of output handlers (where events are sent)
@@ -71,23 +73,20 @@ def mock_agent_run():
         """
         if outputs is None or len(outputs) == 0:
             return
-        
+
         output = outputs[0]  # Use first output handler
-        
+
         # Default event sequence if none provided
         if event_sequence is None:
             event_sequence = [
                 BidiConnectionStartEvent(connection_id="test-conn-1", model="test-model"),
                 BidiResponseStartEvent(response_id="test-response-1"),
                 BidiTranscriptStreamEvent(
-                    delta=ContentBlockDelta(text=""),
-                    text="Hello! How can I help you?",
-                    role="assistant",
-                    is_final=True
+                    delta=ContentBlockDelta(text=""), text="Hello! How can I help you?", role="assistant", is_final=True
                 ),
-                BidiResponseCompleteEvent(response_id="test-response-1", stop_reason="complete")
+                BidiResponseCompleteEvent(response_id="test-response-1", stop_reason="complete"),
             ]
-        
+
         # Send events to output handler
         for event in event_sequence:
             try:
@@ -97,10 +96,10 @@ def mock_agent_run():
                 if "stopped" in str(e).lower() or isinstance(e, (StopAsyncIteration, RuntimeError)):
                     break
                 raise
-        
+
         # Simulate normal completion
         await asyncio.sleep(0.01)  # Small delay to simulate processing
-    
+
     return _mock_agent_run
 
 
@@ -108,27 +107,15 @@ def mock_agent_run():
 def mock_nova_sonic_responses():
     """Mock responses from Nova Sonic model for testing."""
     return {
-        "connection_start": BidiConnectionStartEvent(
-            connection_id="test-conn-1",
-            model="amazon.nova-sonic-v1:0"
-        ),
+        "connection_start": BidiConnectionStartEvent(connection_id="test-conn-1", model="amazon.nova-sonic-v1:0"),
         "response_start": BidiResponseStartEvent(response_id="test-response-1"),
         "transcript": BidiTranscriptStreamEvent(
-            delta=ContentBlockDelta(text=""),
-            text="Test response",
-            role="assistant",
-            is_final=True
+            delta=ContentBlockDelta(text=""), text="Test response", role="assistant", is_final=True
         ),
         "audio": BidiAudioStreamEvent(
-            audio=base64.b64encode(b'\x00' * 3200).decode('utf-8'),
-            format="pcm",
-            sample_rate=24000,
-            channels=1
+            audio=base64.b64encode(b"\x00" * 3200).decode("utf-8"), format="pcm", sample_rate=24000, channels=1
         ),
-        "response_complete": BidiResponseCompleteEvent(
-            response_id="test-response-1",
-            stop_reason="complete"
-        )
+        "response_complete": BidiResponseCompleteEvent(response_id="test-response-1", stop_reason="complete"),
     }
 
 
@@ -136,7 +123,7 @@ def mock_nova_sonic_responses():
 def mock_env_vars(monkeypatch):
     """
     Load environment variables from .env file for integration tests, with test-specific overrides.
-    
+
     This fixture loads values from .env file (if it exists) and applies
     test-specific overrides. This ensures integration tests use the same configuration
     as the application while allowing test-specific values where needed.
@@ -147,10 +134,10 @@ def mock_env_vars(monkeypatch):
         "AGENTCORE_MEMORY_ID": "test-memory-id",  # Use test memory ID
         "MEMORY_ENABLED": "true",  # Enable memory for integration tests
     }
-    
+
     # Environment variables to load from .env or use defaults
     env_vars = {}
-    
+
     # Keys that should come from .env if available
     env_keys = [
         "AWS_REGION",
@@ -161,7 +148,7 @@ def mock_env_vars(monkeypatch):
         "OUTPUT_SAMPLE_RATE",
         "SYSTEM_PROMPT",
     ]
-    
+
     # Default values (used if not in .env and not in test_overrides)
     defaults = {
         "AWS_REGION": "us-west-2",
@@ -172,19 +159,19 @@ def mock_env_vars(monkeypatch):
         "OUTPUT_SAMPLE_RATE": "24000",
         "SYSTEM_PROMPT": "You are a helpful voice assistant.",
     }
-    
+
     # Load values: .env > test_overrides > defaults
     for key in env_keys:
         value = os.getenv(key) or test_overrides.get(key) or defaults.get(key)
         if value:
             env_vars[key] = value
             monkeypatch.setenv(key, value)
-    
+
     # Apply test overrides (these always override .env values)
     for key, value in test_overrides.items():
         env_vars[key] = value
         monkeypatch.setenv(key, value)
-    
+
     return env_vars
 
 
@@ -192,7 +179,7 @@ def mock_env_vars(monkeypatch):
 def mock_memory_client_integration():
     """Mock MemoryClient for integration tests."""
     from memory.client import MemoryClient
-    
+
     client = MagicMock(spec=MemoryClient)
     client.memory_id = "test-memory-id"
     # Use region from .env file or default
@@ -221,4 +208,3 @@ def sample_preferences_integration():
     mock_pref = MagicMock()
     mock_pref.content = "User prefers concise responses"
     return [mock_pref]
-

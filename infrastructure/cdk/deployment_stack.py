@@ -19,16 +19,10 @@ import json
 class DeploymentStack(Stack):
     """Stack for orchestrating multi-agent deployments with health checks."""
 
-    def __init__(
-        self,
-        scope: Construct,
-        construct_id: str,
-        base_stack=None,
-        **kwargs
-    ) -> None:
+    def __init__(self, scope: Construct, construct_id: str, base_stack=None, **kwargs) -> None:
         """
         Initialize Deployment stack.
-        
+
         Args:
             scope: Parent construct
             construct_id: Stack ID
@@ -37,13 +31,13 @@ class DeploymentStack(Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         env_name = self.node.try_get_context("environment") or "dev"
-        
+
         # SNS Topic for deployment notifications
         deployment_topic = sns.Topic(
             self,
             "DeploymentNotifications",
             topic_name=f"agentcore-deployment-notifications-{env_name}",
-            display_name=f"AgentCore Deployment Notifications ({env_name})"
+            display_name=f"AgentCore Deployment Notifications ({env_name})",
         )
 
         # Lambda function for health checks
@@ -58,7 +52,7 @@ class DeploymentStack(Stack):
             environment={
                 "ENVIRONMENT": env_name,
                 "SNS_TOPIC_ARN": deployment_topic.topic_arn,
-            }
+            },
         )
 
         # Grant permissions for health checks
@@ -72,7 +66,7 @@ class DeploymentStack(Stack):
                     "bedrock-agentcore:GetRuntime",
                     "bedrock-agentcore:ListRuntimes",
                 ],
-                resources=["*"]
+                resources=["*"],
             )
         )
 
@@ -96,9 +90,9 @@ class DeploymentStack(Stack):
                         f"agentcore-tool-build-{env_name}",
                         f"agentcore-voice-build-{env_name}",
                     ],
-                    "build-status": ["SUCCEEDED"]
-                }
-            )
+                    "build-status": ["SUCCEEDED"],
+                },
+            ),
         )
 
         health_check_rule.add_target(targets.LambdaFunction(health_check_function))
@@ -109,7 +103,7 @@ class DeploymentStack(Stack):
             "DeploymentTopicARNParam",
             parameter_name=f"/agentcore/scaffold/{env_name}/deployment-topic-arn",
             string_value=deployment_topic.topic_arn,
-            description="SNS topic ARN for deployment notifications"
+            description="SNS topic ARN for deployment notifications",
         )
 
         # Outputs
@@ -117,7 +111,7 @@ class DeploymentStack(Stack):
             self,
             "DeploymentTopicARN",
             value=deployment_topic.topic_arn,
-            description="SNS topic ARN for deployment notifications"
+            description="SNS topic ARN for deployment notifications",
         )
 
         self.deployment_topic = deployment_topic

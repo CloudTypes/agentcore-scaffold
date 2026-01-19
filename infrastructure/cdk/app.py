@@ -12,6 +12,7 @@ from vision_stack import VisionInfrastructureStack
 from codebuild_stack import CodeBuildStack
 from web_client_stack import WebClientStack
 from deployment_stack import DeploymentStack
+
 # Memory stack removed - use scripts/manage_memory.py instead
 # from agentcore_memory_stack import AgentCoreMemoryStack
 
@@ -19,7 +20,7 @@ from deployment_stack import DeploymentStack
 # CDK app is in infrastructure/cdk/, so go up 3 levels to project root
 cdk_dir = Path(__file__).parent
 project_root = cdk_dir.parent.parent
-env_file = project_root / '.env'
+env_file = project_root / ".env"
 if env_file.exists():
     load_dotenv(env_file)
     print(f"📋 Loaded configuration from: {env_file}")
@@ -35,29 +36,18 @@ env_name = app.node.try_get_context("environment") or "dev"
 # 1. CDK context (--context region=...)
 # 2. Environment variable (AWS_REGION or AGENTCORE_MEMORY_REGION from .env)
 # 3. Default to us-east-1
-region = (
-    app.node.try_get_context("region") or
-    os.getenv("AWS_REGION") or
-    os.getenv("AGENTCORE_MEMORY_REGION") or
-    "us-east-1"
-)
+region = app.node.try_get_context("region") or os.getenv("AWS_REGION") or os.getenv("AGENTCORE_MEMORY_REGION") or "us-east-1"
 
 account = app.node.try_get_context("account") or None
 
 print(f"🌍 Using region: {region}")
 
 # Create environment object
-env = cdk.Environment(
-    account=account,
-    region=region
-)
+env = cdk.Environment(account=account, region=region)
 
 # Create base infrastructure stack (ECR, IAM, Secrets, etc.)
 base_stack = AgentCoreStack(
-    app,
-    f"AgentCoreScaffold-Base-{env_name}",
-    env=env,
-    description=f"AgentCore Scaffold base infrastructure ({env_name})"
+    app, f"AgentCoreScaffold-Base-{env_name}", env=env, description=f"AgentCore Scaffold base infrastructure ({env_name})"
 )
 
 # Memory management is now handled via scripts/manage_memory.py
@@ -66,10 +56,7 @@ base_stack = AgentCoreStack(
 
 # Create Web Client stack (S3 + CloudFront)
 web_client_stack = WebClientStack(
-    app,
-    f"AgentCoreWebClient-{env_name}",
-    env=env,
-    description=f"Web client deployment (S3 + CloudFront) ({env_name})"
+    app, f"AgentCoreWebClient-{env_name}", env=env, description=f"Web client deployment (S3 + CloudFront) ({env_name})"
 )
 
 # Create Runtime stack (depends on base stack for ECR and IAM role)
@@ -103,7 +90,7 @@ vision_stack = VisionInfrastructureStack(
     app,
     f"AgentCoreVision-{env_name}",
     env=env,
-    description=f"Infrastructure for AgentCore Vision Agent capabilities ({env_name})"
+    description=f"Infrastructure for AgentCore Vision Agent capabilities ({env_name})",
 )
 
 # Create CodeBuild stack (depends on base stack and web client stack)
@@ -134,4 +121,3 @@ deployment_stack = DeploymentStack(
 deployment_stack.add_dependency(base_stack)
 
 app.synth()
-

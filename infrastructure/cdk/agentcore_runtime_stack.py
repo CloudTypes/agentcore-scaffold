@@ -26,11 +26,11 @@ class AgentCoreRuntimeStack(Stack):
         base_stack=None,
         ecr_repo: ecr.IRepository = None,
         agentcore_role: iam.IRole = None,
-        **kwargs
+        **kwargs,
     ) -> None:
         """
         Initialize AgentCore Runtime stack.
-        
+
         Args:
             scope: Parent construct
             construct_id: Stack ID
@@ -41,7 +41,7 @@ class AgentCoreRuntimeStack(Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         env_name = self.node.try_get_context("environment") or "dev"
-        
+
         # Get ECR repository from base stack (preferred) or use provided (legacy)
         if base_stack:
             ecr_repos = base_stack.ecr_repos
@@ -56,14 +56,18 @@ class AgentCoreRuntimeStack(Stack):
         else:
             ecr_repo_uri = self.node.try_get_context("ecr_repo_uri")
             if not ecr_repo_uri:
-                raise ValueError("ECR repository URI is required. Provide base_stack, ecr_repo, or set ecr_repo_uri in context.")
+                raise ValueError(
+                    "ECR repository URI is required. Provide base_stack, ecr_repo, or set ecr_repo_uri in context."
+                )
 
         # Get role ARN from parameter or use provided
         role_arn = self.node.try_get_context("agentcore_role_arn")
         if not role_arn and agentcore_role:
             role_arn = agentcore_role.role_arn
         if not role_arn:
-            raise ValueError("AgentCore role ARN is required. Provide base_stack, agentcore_role, or set agentcore_role_arn in context.")
+            raise ValueError(
+                "AgentCore role ARN is required. Provide base_stack, agentcore_role, or set agentcore_role_arn in context."
+            )
 
         # Lambda function for AgentCore Runtime custom resource
         runtime_handler = _lambda.Function(
@@ -76,7 +80,7 @@ class AgentCoreRuntimeStack(Stack):
             memory_size=512,
             environment={
                 "REGION": self.region,
-            }
+            },
         )
 
         # Add urllib3 to Lambda layer (or include in inline code)
@@ -93,7 +97,7 @@ class AgentCoreRuntimeStack(Stack):
                     "bedrock-agentcore:DeleteRuntime",
                     "bedrock-agentcore:ListRuntimes",
                 ],
-                resources=["*"]
+                resources=["*"],
             )
         )
 
@@ -106,16 +110,14 @@ class AgentCoreRuntimeStack(Stack):
 
         # AgentCore Runtime custom resource
         runtime_name = self.node.try_get_context("runtime_name") or f"voice-agent-runtime-{env_name}"
-        
+
         # Get image tag from SSM Parameter Store (updated by CodeBuild)
         # Parameter is created in base stack, reference it here
         image_tag_param = ssm.StringParameter.from_string_parameter_name(
-            self,
-            "VoiceImageTagParam",
-            string_parameter_name=f"/agentcore/scaffold/{env_name}/voice-image-tag"
+            self, "VoiceImageTagParam", string_parameter_name=f"/agentcore/scaffold/{env_name}/voice-image-tag"
         )
         image_tag = image_tag_param.string_value or self.node.try_get_context("image_tag") or "latest"
-        
+
         # Construct full image URI
         if ecr_repo_uri:
             # Remove https:// or http:// if present, extract just the URI
@@ -123,7 +125,7 @@ class AgentCoreRuntimeStack(Stack):
             image_uri = f"{repo_uri_clean}:{image_tag}"
         else:
             image_uri = ""
-        
+
         runtime = cdk.CustomResource(
             self,
             "AgentCoreRuntime",
@@ -133,7 +135,7 @@ class AgentCoreRuntimeStack(Stack):
                 "ImageUri": image_uri,
                 "RoleArn": role_arn,
                 "Region": self.region,
-            }
+            },
         )
 
         # Store runtime endpoint in SSM (environment-specific)
@@ -142,16 +144,16 @@ class AgentCoreRuntimeStack(Stack):
             "RuntimeEndpointParam",
             parameter_name=f"/agentcore/scaffold/{env_name}/voice-agent-endpoint",
             string_value=runtime.get_att_string("Endpoint"),
-            description="AgentCore Runtime endpoint URL for voice agent"
+            description="AgentCore Runtime endpoint URL for voice agent",
         )
-        
+
         # Also store at root level for backward compatibility
         ssm.StringParameter(
             self,
             "RuntimeEndpointParamLegacy",
             parameter_name="/agentcore/scaffold/runtime-endpoint",
             string_value=runtime.get_att_string("Endpoint"),
-            description="AgentCore Runtime endpoint URL (legacy)"
+            description="AgentCore Runtime endpoint URL (legacy)",
         )
 
         # Store runtime ID in SSM (environment-specific)
@@ -160,32 +162,24 @@ class AgentCoreRuntimeStack(Stack):
             "RuntimeIdParam",
             parameter_name=f"/agentcore/scaffold/{env_name}/voice-agent-runtime-id",
             string_value=runtime.get_att_string("RuntimeId"),
-            description="AgentCore Runtime ID for voice agent"
+            description="AgentCore Runtime ID for voice agent",
         )
-        
+
         # Also store at root level for backward compatibility
         ssm.StringParameter(
             self,
             "RuntimeIdParamLegacy",
             parameter_name="/agentcore/scaffold/runtime-id",
             string_value=runtime.get_att_string("RuntimeId"),
-            description="AgentCore Runtime ID (legacy)"
+            description="AgentCore Runtime ID (legacy)",
         )
 
         # Outputs
         CfnOutput(
-            self,
-            "RuntimeEndpoint",
-            value=runtime.get_att_string("Endpoint"),
-            description="AgentCore Runtime endpoint URL"
+            self, "RuntimeEndpoint", value=runtime.get_att_string("Endpoint"), description="AgentCore Runtime endpoint URL"
         )
 
-        CfnOutput(
-            self,
-            "RuntimeId",
-            value=runtime.get_att_string("RuntimeId"),
-            description="AgentCore Runtime ID"
-        )
+        CfnOutput(self, "RuntimeId", value=runtime.get_att_string("RuntimeId"), description="AgentCore Runtime ID")
 
     def _get_runtime_handler_code(self) -> str:
         """Get Lambda handler code for AgentCore Runtime custom resource."""
@@ -266,4 +260,3 @@ def handler(event, context):
         traceback.print_exc()
         send(event, context, 'FAILED', {}, reason=str(e))
 """
-
