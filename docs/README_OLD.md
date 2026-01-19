@@ -60,10 +60,10 @@ The Dockerfile includes PortAudio (`portaudio19-dev`) as a system dependency, wh
 
 ```bash
 # Build for ARM64 (required for AgentCore Runtime)
-docker buildx build --platform linux/arm64 -t agentcore-voice-agent:latest .
+docker buildx build --platform linux/arm64 -t agentcore-scaffold:latest .
 
 # Or if using Docker Desktop with buildx
-docker build --platform linux/arm64 -t agentcore-voice-agent:latest .
+docker build --platform linux/arm64 -t agentcore-scaffold:latest .
 ```
 
 The Dockerfile automatically installs:

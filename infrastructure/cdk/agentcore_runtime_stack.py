@@ -112,7 +112,7 @@ class AgentCoreRuntimeStack(Stack):
         image_tag_param = ssm.StringParameter.from_string_parameter_name(
             self,
             "VoiceImageTagParam",
-            string_parameter_name=f"/agentcore/voice-agent/{env_name}/voice-image-tag"
+            string_parameter_name=f"/agentcore/scaffold/{env_name}/voice-image-tag"
         )
         image_tag = image_tag_param.string_value or self.node.try_get_context("image_tag") or "latest"
         
@@ -140,7 +140,7 @@ class AgentCoreRuntimeStack(Stack):
         ssm.StringParameter(
             self,
             "RuntimeEndpointParam",
-            parameter_name=f"/agentcore/voice-agent/{env_name}/voice-agent-endpoint",
+            parameter_name=f"/agentcore/scaffold/{env_name}/voice-agent-endpoint",
             string_value=runtime.get_att_string("Endpoint"),
             description="AgentCore Runtime endpoint URL for voice agent"
         )
@@ -149,7 +149,7 @@ class AgentCoreRuntimeStack(Stack):
         ssm.StringParameter(
             self,
             "RuntimeEndpointParamLegacy",
-            parameter_name="/agentcore/voice-agent/runtime-endpoint",
+            parameter_name="/agentcore/scaffold/runtime-endpoint",
             string_value=runtime.get_att_string("Endpoint"),
             description="AgentCore Runtime endpoint URL (legacy)"
         )
@@ -158,7 +158,7 @@ class AgentCoreRuntimeStack(Stack):
         ssm.StringParameter(
             self,
             "RuntimeIdParam",
-            parameter_name=f"/agentcore/voice-agent/{env_name}/voice-agent-runtime-id",
+            parameter_name=f"/agentcore/scaffold/{env_name}/voice-agent-runtime-id",
             string_value=runtime.get_att_string("RuntimeId"),
             description="AgentCore Runtime ID for voice agent"
         )
@@ -167,7 +167,7 @@ class AgentCoreRuntimeStack(Stack):
         ssm.StringParameter(
             self,
             "RuntimeIdParamLegacy",
-            parameter_name="/agentcore/voice-agent/runtime-id",
+            parameter_name="/agentcore/scaffold/runtime-id",
             string_value=runtime.get_att_string("RuntimeId"),
             description="AgentCore Runtime ID (legacy)"
         )

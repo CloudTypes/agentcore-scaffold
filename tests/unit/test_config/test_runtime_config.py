@@ -165,7 +165,7 @@ class TestRuntimeConfigMemory:
             }
             mock_boto3.return_value = mock_ssm
             
-            value = config.get_ssm_parameter("/agentcore/voice-agent/memory-id")
+            value = config.get_ssm_parameter("/agentcore/scaffold/memory-id")
             
             assert value == "ssm-value-123"
             mock_ssm.get_parameter.assert_called_once()
@@ -187,7 +187,7 @@ class TestRuntimeConfigMemory:
             )
             mock_boto3.return_value = mock_ssm
             
-            value = config.get_ssm_parameter("/agentcore/voice-agent/memory-id")
+            value = config.get_ssm_parameter("/agentcore/scaffold/memory-id")
             
             assert value is None
     
@@ -205,7 +205,7 @@ class TestRuntimeConfigMemory:
             }
             mock_boto3.return_value = mock_secrets
             
-            secret = config.get_secret("agentcore/voice-agent/memory-id")
+            secret = config.get_secret("agentcore/scaffold/memory-id")
             
             assert secret is not None
             assert secret["memory_id"] == "secret-memory-id"
@@ -227,7 +227,7 @@ class TestRuntimeConfigMemory:
             )
             mock_boto3.return_value = mock_secrets
             
-            secret = config.get_secret("agentcore/voice-agent/memory-id")
+            secret = config.get_secret("agentcore/scaffold/memory-id")
             
             assert secret is None
     
@@ -510,7 +510,7 @@ class TestRuntimeConfigMemory:
             )
             mock_boto3.return_value = mock_ssm
             
-            value = config.get_ssm_parameter("/agentcore/voice-agent/memory-id")
+            value = config.get_ssm_parameter("/agentcore/scaffold/memory-id")
             
             assert value is None
     
@@ -526,7 +526,7 @@ class TestRuntimeConfigMemory:
             mock_ssm.get_parameter.side_effect = Exception("Network error")
             mock_boto3.return_value = mock_ssm
             
-            value = config.get_ssm_parameter("/agentcore/voice-agent/memory-id")
+            value = config.get_ssm_parameter("/agentcore/scaffold/memory-id")
             
             assert value is None
     
@@ -544,12 +544,12 @@ class TestRuntimeConfigMemory:
             }
             mock_boto3.return_value = mock_ssm
             
-            value = config.get_ssm_parameter("/agentcore/voice-agent/secret")
+            value = config.get_ssm_parameter("/agentcore/scaffold/secret")
             
             assert value == "encrypted-value-123"
             # Verify WithDecryption=True was passed
             mock_ssm.get_parameter.assert_called_once_with(
-                Name="/agentcore/voice-agent/secret",
+                Name="/agentcore/scaffold/secret",
                 WithDecryption=True
             )
     
@@ -562,7 +562,7 @@ class TestRuntimeConfigMemory:
         config = RuntimeConfig()
         
         with patch('config.runtime.boto3.client') as mock_boto3:
-            value = config.get_ssm_parameter("/agentcore/voice-agent/memory-id")
+            value = config.get_ssm_parameter("/agentcore/scaffold/memory-id")
             
             assert value is None
             mock_boto3.assert_not_called()
@@ -582,7 +582,7 @@ class TestRuntimeConfigMemory:
             }
             mock_boto3.return_value = mock_secrets
             
-            secret = config.get_secret("agentcore/voice-agent/test")
+            secret = config.get_secret("agentcore/scaffold/test")
             
             # Should return None due to JSON parsing error
             assert secret is None
@@ -602,7 +602,7 @@ class TestRuntimeConfigMemory:
             mock_boto3.return_value = mock_secrets
             
             # This will fail JSON parsing, but we should handle it
-            secret = config.get_secret("agentcore/voice-agent/test")
+            secret = config.get_secret("agentcore/scaffold/test")
             
             # JSON parsing will fail, so secret will be None
             # The code tries json.loads() which will raise an exception
@@ -625,7 +625,7 @@ class TestRuntimeConfigMemory:
             )
             mock_boto3.return_value = mock_secrets
             
-            secret = config.get_secret("agentcore/voice-agent/test")
+            secret = config.get_secret("agentcore/scaffold/test")
             
             assert secret is None
     
@@ -638,7 +638,7 @@ class TestRuntimeConfigMemory:
         config = RuntimeConfig()
         
         with patch('config.runtime.boto3.client') as mock_boto3:
-            secret = config.get_secret("agentcore/voice-agent/test")
+            secret = config.get_secret("agentcore/scaffold/test")
             
             assert secret is None
             mock_boto3.assert_not_called()
@@ -683,7 +683,7 @@ class TestRuntimeConfigMemory:
                 
                 assert value == "ssm-value"
                 # Verify SSM parameter name was constructed correctly
-                mock_ssm.assert_called_once_with("/agentcore/voice-agent/TEST_CONFIG")
+                mock_ssm.assert_called_once_with("/agentcore/scaffold/TEST_CONFIG")
     
     def test_get_config_value_secret_name_construction(self, monkeypatch):
         """Test secret name construction with key transformation."""
@@ -698,7 +698,7 @@ class TestRuntimeConfigMemory:
             
             assert value == "secret-value"
             # Verify secret name was constructed correctly (key transformed)
-            mock_secret.assert_called_with("agentcore/voice-agent/test-config-key")
+            mock_secret.assert_called_with("agentcore/scaffold/test-config-key")
     
     def test_get_config_value_fallback_chain_complete(self, monkeypatch):
         """Test complete fallback chain: env → secrets → SSM → default."""

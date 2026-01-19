@@ -61,12 +61,12 @@ Each agent has its own ECR repository for independent versioning and lifecycle m
 
 | Repository Name | Agent | Purpose |
 |----------------|-------|---------|
-| `agentcore-voice-agent-orchestrator` | Orchestrator | Routes requests to specialist agents |
-| `agentcore-voice-agent-vision` | Vision | Image and video analysis |
-| `agentcore-voice-agent-document` | Document | Document processing |
-| `agentcore-voice-agent-data` | Data | Data analysis and SQL queries |
-| `agentcore-voice-agent-tool` | Tool | Calculator, weather, utilities |
-| `agentcore-voice-agent-voice` | Voice | Bi-directional voice streaming |
+| `agentcore-scaffold-orchestrator` | Orchestrator | Routes requests to specialist agents |
+| `agentcore-scaffold-vision` | Vision | Image and video analysis |
+| `agentcore-scaffold-document` | Document | Document processing |
+| `agentcore-scaffold-data` | Data | Data analysis and SQL queries |
+| `agentcore-scaffold-tool` | Tool | Calculator, weather, utilities |
+| `agentcore-scaffold-voice` | Voice | Bi-directional voice streaming |
 
 ### Image Tagging Strategy
 
@@ -241,7 +241,7 @@ Agents run in AgentCore Runtime which handles networking internally. No security
 
 ### CloudWatch Logs
 
-- **Log Groups**: `/aws/agentcore/voice-agent`
+- **Log Groups**: `/aws/agentcore/scaffold`
 - **Retention**: 7 days (dev), 30 days (prod)
 - **Streams**: Per agent runtime
 

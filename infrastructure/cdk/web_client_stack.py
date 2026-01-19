@@ -35,7 +35,7 @@ class WebClientStack(Stack):
         self.web_bucket = s3.Bucket(
             self,
             "WebClientBucket",
-            bucket_name=f"agentcore-voice-agent-web-{env_name}-{self.account}",
+            bucket_name=f"agentcore-scaffold-web-{env_name}-{self.account}",
             versioned=True,
             encryption=s3.BucketEncryption.S3_MANAGED,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
@@ -122,7 +122,7 @@ class WebClientStack(Stack):
         ssm.StringParameter(
             self,
             "WebClientURLParam",
-            parameter_name=f"/agentcore/voice-agent/{env_name}/web-client-url",
+            parameter_name=f"/agentcore/scaffold/{env_name}/web-client-url",
             string_value=f"https://{self.cloudfront_distribution.distribution_domain_name}",
             description="CloudFront distribution URL for web client"
         )

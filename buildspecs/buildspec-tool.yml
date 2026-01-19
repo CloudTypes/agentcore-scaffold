@@ -24,7 +24,7 @@ phases:
       - docker push $ECR_REPO_URI:latest
       - echo Updating SSM parameter with new image tag...
       - aws ssm put-parameter \
-          --name "/agentcore/voice-agent/${ENVIRONMENT}/tool-image-tag" \
+          --name "/agentcore/scaffold/${ENVIRONMENT}/tool-image-tag" \
           --value "$IMAGE_TAG" \
           --type "String" \
           --overwrite \

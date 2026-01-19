@@ -38,12 +38,12 @@ phases:
           # Option 2: Generate inline (fallback)
           echo Generating config.js inline...
           API_BASE=$(aws ssm get-parameter \
-            --name "/agentcore/voice-agent/${ENVIRONMENT}/voice-agent-endpoint" \
+            --name "/agentcore/scaffold/${ENVIRONMENT}/voice-agent-endpoint" \
             --region $AWS_REGION \
             --query 'Parameter.Value' \
             --output text 2>/dev/null || echo "")
           ORCHESTRATOR_BASE=$(aws ssm get-parameter \
-            --name "/agentcore/voice-agent/${ENVIRONMENT}/orchestrator-endpoint" \
+            --name "/agentcore/scaffold/${ENVIRONMENT}/orchestrator-endpoint" \
             --region $AWS_REGION \
             --query 'Parameter.Value' \
             --output text 2>/dev/null || echo "")

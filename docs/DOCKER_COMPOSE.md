@@ -313,7 +313,7 @@ If agents can't communicate:
 1. **Check network**:
    ```bash
    docker network ls
-   docker network inspect agentcore-voice-agent_agent-network
+   docker network inspect agentcore-scaffold_agent-network
    ```
 
 2. **Verify service names**: Agents use docker-compose service names (e.g., `http://vision:8080`)

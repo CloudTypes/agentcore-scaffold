@@ -17,13 +17,13 @@ Sensitive values stored in AWS Secrets Manager:
 
 | Variable | Local Dev | Production | Description |
 |----------|-----------|------------|-------------|
-| `GOOGLE_CLIENT_ID` | `.env` | `agentcore/voice-agent/{env}/google-oauth2` | Google OAuth2 client ID |
-| `GOOGLE_CLIENT_SECRET` | `.env` | `agentcore/voice-agent/{env}/google-oauth2` | Google OAuth2 client secret |
-| `GOOGLE_REDIRECT_URI` | `.env` | `agentcore/voice-agent/{env}/google-oauth2` | OAuth2 redirect URI |
-| `JWT_SECRET_KEY` | `.env` | `agentcore/voice-agent/{env}/jwt-secret` | JWT signing secret |
-| `AGENT_AUTH_SECRET` | `.env` | `agentcore/voice-agent/{env}/agent-auth-secret` | Inter-agent auth secret |
-| `WEATHER_API_KEY` | `.env` | `agentcore/voice-agent/{env}/weather-api-key` | Weather API key (optional) |
-| `AGENTCORE_MEMORY_ID` | `.env` | `agentcore/voice-agent/{env}/memory-id` | Memory resource ID |
+| `GOOGLE_CLIENT_ID` | `.env` | `agentcore/scaffold/{env}/google-oauth2` | Google OAuth2 client ID |
+| `GOOGLE_CLIENT_SECRET` | `.env` | `agentcore/scaffold/{env}/google-oauth2` | Google OAuth2 client secret |
+| `GOOGLE_REDIRECT_URI` | `.env` | `agentcore/scaffold/{env}/google-oauth2` | OAuth2 redirect URI |
+| `JWT_SECRET_KEY` | `.env` | `agentcore/scaffold/{env}/jwt-secret` | JWT signing secret |
+| `AGENT_AUTH_SECRET` | `.env` | `agentcore/scaffold/{env}/agent-auth-secret` | Inter-agent auth secret |
+| `WEATHER_API_KEY` | `.env` | `agentcore/scaffold/{env}/weather-api-key` | Weather API key (optional) |
+| `AGENTCORE_MEMORY_ID` | `.env` | `agentcore/scaffold/{env}/memory-id` | Memory resource ID |
 
 ### 2. Configuration (SSM Parameter Store)
 
@@ -31,16 +31,16 @@ Non-sensitive configuration stored in SSM Parameter Store:
 
 | Variable | Local Dev | Production SSM Path | Description |
 |----------|-----------|---------------------|-------------|
-| `ORCHESTRATOR_MODEL` | `.env` | `/agentcore/voice-agent/{env}/orchestrator-model` | Bedrock model for orchestrator |
-| `VISION_MODEL` | `.env` | `/agentcore/voice-agent/{env}/vision-model` | Bedrock model for vision agent |
-| `DOCUMENT_MODEL` | `.env` | `/agentcore/voice-agent/{env}/document-model` | Bedrock model for document agent |
-| `DATA_MODEL` | `.env` | `/agentcore/voice-agent/{env}/data-model` | Bedrock model for data agent |
-| `TOOL_MODEL` | `.env` | `/agentcore/voice-agent/{env}/tool-model` | Bedrock model for tool agent |
-| `MODEL_ID` | `.env` | `/agentcore/voice-agent/{env}/voice-model` | Bedrock model for voice agent |
-| `AGENTCORE_MEMORY_REGION` | `.env` | `/agentcore/voice-agent/{env}/memory-region` | AWS region for memory |
-| `MEMORY_ENABLED` | `.env` | `/agentcore/voice-agent/{env}/memory-enabled` | Enable/disable memory |
-| `S3_VISION_BUCKET` | `.env` | `/agentcore/voice-agent/{env}/s3-vision-bucket` | S3 bucket for vision uploads |
-| `AWS_REGION` | `.env` | `/agentcore/voice-agent/{env}/aws-region` | AWS region |
+| `ORCHESTRATOR_MODEL` | `.env` | `/agentcore/scaffold/{env}/orchestrator-model` | Bedrock model for orchestrator |
+| `VISION_MODEL` | `.env` | `/agentcore/scaffold/{env}/vision-model` | Bedrock model for vision agent |
+| `DOCUMENT_MODEL` | `.env` | `/agentcore/scaffold/{env}/document-model` | Bedrock model for document agent |
+| `DATA_MODEL` | `.env` | `/agentcore/scaffold/{env}/data-model` | Bedrock model for data agent |
+| `TOOL_MODEL` | `.env` | `/agentcore/scaffold/{env}/tool-model` | Bedrock model for tool agent |
+| `MODEL_ID` | `.env` | `/agentcore/scaffold/{env}/voice-model` | Bedrock model for voice agent |
+| `AGENTCORE_MEMORY_REGION` | `.env` | `/agentcore/scaffold/{env}/memory-region` | AWS region for memory |
+| `MEMORY_ENABLED` | `.env` | `/agentcore/scaffold/{env}/memory-enabled` | Enable/disable memory |
+| `S3_VISION_BUCKET` | `.env` | `/agentcore/scaffold/{env}/s3-vision-bucket` | S3 bucket for vision uploads |
+| `AWS_REGION` | `.env` | `/agentcore/scaffold/{env}/aws-region` | AWS region |
 
 ### 3. Runtime Endpoints (SSM Parameter Store)
 
@@ -48,10 +48,10 @@ Agent endpoints discovered at runtime:
 
 | Variable | Production SSM Path | Description |
 |----------|---------------------|-------------|
-| `ORCHESTRATOR_ENDPOINT` | `/agentcore/voice-agent/{env}/orchestrator-endpoint` | Orchestrator API endpoint |
-| `VOICE_AGENT_ENDPOINT` | `/agentcore/voice-agent/{env}/voice-agent-endpoint` | Voice agent API endpoint |
-| `VISION_AGENT_ENDPOINT` | `/agentcore/voice-agent/{env}/vision-endpoint` | Vision agent endpoint |
-| `WEB_CLIENT_URL` | `/agentcore/voice-agent/{env}/web-client-url` | CloudFront distribution URL |
+| `ORCHESTRATOR_ENDPOINT` | `/agentcore/scaffold/{env}/orchestrator-endpoint` | Orchestrator API endpoint |
+| `VOICE_AGENT_ENDPOINT` | `/agentcore/scaffold/{env}/voice-agent-endpoint` | Voice agent API endpoint |
+| `VISION_AGENT_ENDPOINT` | `/agentcore/scaffold/{env}/vision-endpoint` | Vision agent endpoint |
+| `WEB_CLIENT_URL` | `/agentcore/scaffold/{env}/web-client-url` | CloudFront distribution URL |
 
 ### 4. Image Tags (SSM Parameter Store)
 
@@ -59,12 +59,12 @@ Docker image tags updated by CodeBuild:
 
 | Variable | Production SSM Path | Description |
 |----------|---------------------|-------------|
-| `ORCHESTRATOR_IMAGE_TAG` | `/agentcore/voice-agent/{env}/orchestrator-image-tag` | Orchestrator image tag |
-| `VISION_IMAGE_TAG` | `/agentcore/voice-agent/{env}/vision-image-tag` | Vision agent image tag |
-| `DOCUMENT_IMAGE_TAG` | `/agentcore/voice-agent/{env}/document-image-tag` | Document agent image tag |
-| `DATA_IMAGE_TAG` | `/agentcore/voice-agent/{env}/data-image-tag` | Data agent image tag |
-| `TOOL_IMAGE_TAG` | `/agentcore/voice-agent/{env}/tool-image-tag` | Tool agent image tag |
-| `VOICE_IMAGE_TAG` | `/agentcore/voice-agent/{env}/voice-image-tag` | Voice agent image tag |
+| `ORCHESTRATOR_IMAGE_TAG` | `/agentcore/scaffold/{env}/orchestrator-image-tag` | Orchestrator image tag |
+| `VISION_IMAGE_TAG` | `/agentcore/scaffold/{env}/vision-image-tag` | Vision agent image tag |
+| `DOCUMENT_IMAGE_TAG` | `/agentcore/scaffold/{env}/document-image-tag` | Document agent image tag |
+| `DATA_IMAGE_TAG` | `/agentcore/scaffold/{env}/data-image-tag` | Data agent image tag |
+| `TOOL_IMAGE_TAG` | `/agentcore/scaffold/{env}/tool-image-tag` | Tool agent image tag |
+| `VOICE_IMAGE_TAG` | `/agentcore/scaffold/{env}/voice-image-tag` | Voice agent image tag |
 
 ## Local Development Setup
 
@@ -111,14 +111,14 @@ JWT_SECRET_KEY=$(openssl rand -hex 32)
 ```bash
 # Model configuration
 aws ssm put-parameter \
-  --name "/agentcore/voice-agent/prod/orchestrator-model" \
+  --name "/agentcore/scaffold/prod/orchestrator-model" \
   --value "us.amazon.nova-pro-v1:0" \
   --type "String" \
   --region us-west-2
 
 # Memory configuration
 aws ssm put-parameter \
-  --name "/agentcore/voice-agent/prod/memory-id" \
+  --name "/agentcore/scaffold/prod/memory-id" \
   --value "your-memory-id" \
   --type "String" \
   --region us-west-2
@@ -129,7 +129,7 @@ aws ssm put-parameter \
 ```bash
 # Google OAuth2 (JSON format)
 aws secretsmanager put-secret-value \
-  --secret-id agentcore/voice-agent/prod/google-oauth2 \
+  --secret-id agentcore/scaffold/prod/google-oauth2 \
   --secret-string '{
     "client_id": "your-client-id.apps.googleusercontent.com",
     "client_secret": "your-secret",
@@ -140,7 +140,7 @@ aws secretsmanager put-secret-value \
 # JWT Secret (JSON format)
 JWT_SECRET=$(openssl rand -hex 32)
 aws secretsmanager put-secret-value \
-  --secret-id agentcore/voice-agent/prod/jwt-secret \
+  --secret-id agentcore/scaffold/prod/jwt-secret \
   --secret-string "{\"secret_key\": \"$JWT_SECRET\"}" \
   --region us-west-2
 ```
@@ -163,7 +163,7 @@ for model in ORCHESTRATOR_MODEL VISION_MODEL DOCUMENT_MODEL DATA_MODEL TOOL_MODE
   if [ -n "$value" ]; then
     param_name=$(echo $model | tr '[:upper:]' '[:lower:]' | sed 's/_model//')
     aws ssm put-parameter \
-      --name "/agentcore/voice-agent/prod/${param_name}-model" \
+      --name "/agentcore/scaffold/prod/${param_name}-model" \
       --value "$value" \
       --type "String" \
       --region us-west-2
@@ -176,7 +176,7 @@ done
 ```bash
 # Migrate Google OAuth2
 aws secretsmanager put-secret-value \
-  --secret-id agentcore/voice-agent/prod/google-oauth2 \
+  --secret-id agentcore/scaffold/prod/google-oauth2 \
   --secret-string "{
     \"client_id\": \"$GOOGLE_CLIENT_ID\",
     \"client_secret\": \"$GOOGLE_CLIENT_SECRET\",
@@ -186,7 +186,7 @@ aws secretsmanager put-secret-value \
 
 # Migrate JWT secret
 aws secretsmanager put-secret-value \
-  --secret-id agentcore/voice-agent/prod/jwt-secret \
+  --secret-id agentcore/scaffold/prod/jwt-secret \
   --secret-string "{\"secret_key\": \"$JWT_SECRET_KEY\"}" \
   --region us-west-2
 ```
@@ -221,8 +221,8 @@ aws secretsmanager put-secret-value \
 
 Replace `{env}` with your environment name (`dev`, `prod`, etc.):
 
-- **SSM Parameters**: `/agentcore/voice-agent/{env}/*`
-- **Secrets Manager**: `agentcore/voice-agent/{env}/*`
+- **SSM Parameters**: `/agentcore/scaffold/{env}/*`
+- **Secrets Manager**: `agentcore/scaffold/{env}/*`
 
 ## Best Practices
 
@@ -236,12 +236,12 @@ Replace `{env}` with your environment name (`dev`, `prod`, etc.):
 
 ### Variable Not Found
 
-**Error**: `Parameter /agentcore/voice-agent/prod/xxx not found`
+**Error**: `Parameter /agentcore/scaffold/prod/xxx not found`
 
 **Solution**: Create the parameter:
 ```bash
 aws ssm put-parameter \
-  --name "/agentcore/voice-agent/prod/xxx" \
+  --name "/agentcore/scaffold/prod/xxx" \
   --value "default-value" \
   --type "String"
 ```

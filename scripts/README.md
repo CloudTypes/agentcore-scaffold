@@ -29,16 +29,16 @@ The `manage_memory.py` script provides a CLI interface for managing AgentCore Me
 The script uses the following default configuration:
 
 - **Memory Name**: `voice_agent_memory` (must match pattern: `[a-zA-Z][a-zA-Z0-9_]{0,47}`)
-- **SSM Parameter**: `/agentcore/voice-agent/memory-id`
-- **Secrets Manager**: `agentcore/voice-agent/memory-id`
+- **SSM Parameter**: `/agentcore/scaffold/memory-id`
+- **Secrets Manager**: `agentcore/scaffold/memory-id`
 - **Event Expiry**: 30 days
 
 The memory ID is retrieved in the following order (first match wins):
 1. Command-line `--memory-id` option (if provided)
 2. Environment variable `AGENTCORE_MEMORY_ARN` (ARN format, extracts ID)
 3. Environment variable `AGENTCORE_MEMORY_ID` (direct ID)
-4. SSM Parameter Store: `/agentcore/voice-agent/memory-id`
-5. Secrets Manager: `agentcore/voice-agent/memory-id` (fallback)
+4. SSM Parameter Store: `/agentcore/scaffold/memory-id`
+5. Secrets Manager: `agentcore/scaffold/memory-id` (fallback)
 
 This allows for flexible configuration: use environment variables for local testing, or rely on SSM/Secrets Manager for deployed environments.
 
@@ -86,12 +86,12 @@ $ python scripts/manage_memory.py create
 ⏱️  Event expiry: 30 days
 🔄 Creating memory resource with strategies...
 ✅ Memory created successfully: voice_agent_memory-yupt8b5dkN
-🔐 Stored memory_id in SSM: /agentcore/voice-agent/memory-id
-🔐 Created memory_id in Secrets Manager: agentcore/voice-agent/memory-id
+🔐 Stored memory_id in SSM: /agentcore/scaffold/memory-id
+🔐 Created memory_id in Secrets Manager: agentcore/scaffold/memory-id
 🎉 Memory setup completed successfully!
    Memory ID: voice_agent_memory-yupt8b5dkN
-   SSM Parameter: /agentcore/voice-agent/memory-id
-   Secrets Manager: agentcore/voice-agent/memory-id
+   SSM Parameter: /agentcore/scaffold/memory-id
+   Secrets Manager: agentcore/scaffold/memory-id
 ```
 
 ---
@@ -122,15 +122,15 @@ python scripts/manage_memory.py delete --confirm
 ```bash
 $ python scripts/manage_memory.py delete
 🔍 Looking for memory ID in region: us-west-2
-   SSM Parameter: /agentcore/voice-agent/memory-id
-   Secrets Manager: agentcore/voice-agent/memory-id
+   SSM Parameter: /agentcore/scaffold/memory-id
+   Secrets Manager: agentcore/scaffold/memory-id
    Checking SSM Parameter Store...
    ✅ Found in SSM: voice_agent_memory-yupt8b5dkN
 ⚠️  Are you sure you want to delete memory voice_agent_memory-yupt8b5dkN? This action cannot be undone. [y/N]: y
 🗑️  Deleting memory: voice_agent_memory-yupt8b5dkN
 ✅ Memory deleted successfully: voice_agent_memory-yupt8b5dkN
-🧹 Deleted SSM parameter: /agentcore/voice-agent/memory-id
-🧹 Deleted Secrets Manager secret: agentcore/voice-agent/memory-id
+🧹 Deleted SSM parameter: /agentcore/scaffold/memory-id
+🧹 Deleted Secrets Manager secret: agentcore/scaffold/memory-id
 🎉 Memory and stored IDs deleted successfully
 ```
 
@@ -153,8 +153,8 @@ python scripts/manage_memory.py status
 ```bash
 $ python scripts/manage_memory.py status
 🔍 Checking memory status in region: us-west-2
-   SSM Parameter: /agentcore/voice-agent/memory-id
-   Secrets Manager: agentcore/voice-agent/memory-id
+   SSM Parameter: /agentcore/scaffold/memory-id
+   Secrets Manager: agentcore/scaffold/memory-id
    Checking SSM Parameter Store...
    ✅ Found in SSM: voice_agent_memory-yupt8b5dkN
 📋 Memory ID: voice_agent_memory-yupt8b5dkN
@@ -492,8 +492,8 @@ If memory creation fails with validation errors:
 
 The memory ID stored by this script is automatically used by the application's `MemoryClient` class. The application reads the memory ID from:
 
-1. SSM Parameter Store: `/agentcore/voice-agent/memory-id`
-2. Secrets Manager: `agentcore/voice-agent/memory-id` (fallback)
+1. SSM Parameter Store: `/agentcore/scaffold/memory-id`
+2. Secrets Manager: `agentcore/scaffold/memory-id` (fallback)
 
 No additional configuration is needed in the application code.
 

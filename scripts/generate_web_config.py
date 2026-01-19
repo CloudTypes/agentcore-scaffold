@@ -33,12 +33,12 @@ def generate_config(environment="dev", region=None, output_file="config.js"):
     # Get API endpoints from SSM
     voice_endpoint = get_ssm_parameter(
         ssm_client,
-        f"/agentcore/voice-agent/{environment}/voice-agent-endpoint"
+        f"/agentcore/scaffold/{environment}/voice-agent-endpoint"
     )
     
     orchestrator_endpoint = get_ssm_parameter(
         ssm_client,
-        f"/agentcore/voice-agent/{environment}/orchestrator-endpoint"
+        f"/agentcore/scaffold/{environment}/orchestrator-endpoint"
     )
     
     # Derive WebSocket endpoint from voice endpoint

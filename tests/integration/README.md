@@ -198,7 +198,7 @@ If you see `asyncio.TimeoutError`, it usually means:
 If you see import errors, ensure you're running tests from the project root:
 
 ```bash
-cd /path/to/agentcore-voice-agent
+cd /path/to/agentcore-scaffold
 pytest tests/integration/
 ```
 

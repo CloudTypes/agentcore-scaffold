@@ -14,7 +14,7 @@ from constructs import Construct
 
 
 class AgentCoreStack(Stack):
-    """Stack for AgentCore Voice Agent infrastructure."""
+    """Stack for AgentCore Scaffold infrastructure."""
 
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -27,7 +27,7 @@ class AgentCoreStack(Stack):
             repo = ecr.Repository(
                 self,
                 f"{agent_name.capitalize()}ECRRepo",
-                repository_name=f"agentcore-voice-agent-{agent_name}",
+                repository_name=f"agentcore-scaffold-{agent_name}",
                 image_scan_on_push=True,
                 lifecycle_rules=[
                     ecr.LifecycleRule(
@@ -89,7 +89,7 @@ class AgentCoreStack(Stack):
                     "secretsmanager:DescribeSecret"
                 ],
                 resources=[
-                    f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:agentcore/voice-agent/*"
+                    f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:agentcore/scaffold/*"
                 ]
             )
         )
@@ -104,7 +104,7 @@ class AgentCoreStack(Stack):
                     "ssm:GetParametersByPath"
                 ],
                 resources=[
-                    f"arn:aws:ssm:{self.region}:{self.account}:parameter/agentcore/voice-agent/*"
+                    f"arn:aws:ssm:{self.region}:{self.account}:parameter/agentcore/scaffold/*"
                 ]
             )
         )
@@ -119,7 +119,7 @@ class AgentCoreStack(Stack):
                     "logs:PutLogEvents"
                 ],
                 resources=[
-                    f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/agentcore/voice-agent:*"
+                    f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/agentcore/scaffold:*"
                 ]
             )
         )
@@ -128,7 +128,7 @@ class AgentCoreStack(Stack):
         google_oauth_secret = secretsmanager.Secret(
             self,
             "GoogleOAuthSecret",
-            secret_name="agentcore/voice-agent/google-oauth2",
+            secret_name="agentcore/scaffold/google-oauth2",
             description="Google OAuth2 credentials for voice agent",
             generate_secret_string=secretsmanager.SecretStringGenerator(
                 secret_string_template='{"client_id": "", "client_secret": "", "redirect_uri": ""}',
@@ -140,7 +140,7 @@ class AgentCoreStack(Stack):
         jwt_secret = secretsmanager.Secret(
             self,
             "JWTSecret",
-            secret_name="agentcore/voice-agent/jwt-secret",
+            secret_name="agentcore/scaffold/jwt-secret",
             description="JWT signing secret for voice agent",
             generate_secret_string=secretsmanager.SecretStringGenerator(
                 secret_string_template='{"secret_key": ""}',
@@ -153,7 +153,7 @@ class AgentCoreStack(Stack):
         agent_auth_secret = secretsmanager.Secret(
             self,
             "AgentAuthSecret",
-            secret_name="agentcore/voice-agent/agent-auth-secret",
+            secret_name="agentcore/scaffold/agent-auth-secret",
             description="Secret key for inter-agent authentication (A2A JWT signing)",
             generate_secret_string=secretsmanager.SecretStringGenerator(
                 secret_string_template='{"secret_key": ""}',
@@ -166,7 +166,7 @@ class AgentCoreStack(Stack):
         memory_id_secret = secretsmanager.Secret(
             self,
             "MemoryIdSecret",
-            secret_name="agentcore/voice-agent/memory-id",
+            secret_name="agentcore/scaffold/memory-id",
             description="AgentCore Memory resource ID",
             generate_secret_string=secretsmanager.SecretStringGenerator(
                 secret_string_template='{"memory_id": ""}',
@@ -185,7 +185,7 @@ class AgentCoreStack(Stack):
         log_group = logs.LogGroup(
             self,
             "VoiceAgentLogGroup",
-            log_group_name="/aws/agentcore/voice-agent",
+            log_group_name="/aws/agentcore/scaffold",
             retention=logs.RetentionDays.ONE_WEEK,
             removal_policy=cdk.RemovalPolicy.DESTROY
         )
@@ -196,7 +196,7 @@ class AgentCoreStack(Stack):
         ssm.StringParameter(
             self,
             "MemoryRegionParam",
-            parameter_name=f"/agentcore/voice-agent/{env_name}/memory-region",
+            parameter_name=f"/agentcore/scaffold/{env_name}/memory-region",
             string_value=self.region,
             description="AWS region for AgentCore Memory"
         )
@@ -207,7 +207,7 @@ class AgentCoreStack(Stack):
             ssm.StringParameter(
                 self,
                 f"{agent_name.capitalize()}ImageTagParam",
-                parameter_name=f"/agentcore/voice-agent/{env_name}/{agent_name}-image-tag",
+                parameter_name=f"/agentcore/scaffold/{env_name}/{agent_name}-image-tag",
                 string_value="latest",  # Default, updated by CodeBuild
                 description=f"Image tag for {agent_name} agent (updated by CodeBuild)"
             )

@@ -107,7 +107,7 @@ class DeploymentStack(Stack):
         ssm.StringParameter(
             self,
             "DeploymentTopicARNParam",
-            parameter_name=f"/agentcore/voice-agent/{env_name}/deployment-topic-arn",
+            parameter_name=f"/agentcore/scaffold/{env_name}/deployment-topic-arn",
             string_value=deployment_topic.topic_arn,
             description="SNS topic ARN for deployment notifications"
         )
@@ -143,19 +143,19 @@ def handler(event, context):
     agents = ['orchestrator', 'vision', 'document', 'data', 'tool', 'voice']
     results = {}
     
-    for agent_name in agents:
-        try:
-            # Get endpoint from SSM
-            endpoint_param = f"/agentcore/voice-agent/{env}/{agent_name}-endpoint"
-            if agent_name == 'voice':
-                endpoint_param = f"/agentcore/voice-agent/{env}/voice-agent-endpoint"
+        for agent_name in agents:
+            try:
+                # Get endpoint from SSM
+                endpoint_param = f"/agentcore/scaffold/{env}/{agent_name}-endpoint"
+                if agent_name == 'voice':
+                    endpoint_param = f"/agentcore/scaffold/{env}/voice-agent-endpoint"
             
             try:
                 endpoint = ssm.get_parameter(Name=endpoint_param)['Parameter']['Value']
             except:
                 # Try legacy parameter
                 if agent_name == 'voice':
-                    endpoint = ssm.get_parameter(Name="/agentcore/voice-agent/runtime-endpoint")['Parameter']['Value']
+                    endpoint = ssm.get_parameter(Name="/agentcore/scaffold/runtime-endpoint")['Parameter']['Value']
                 else:
                     endpoint = ssm.get_parameter(Name=f"/agentcore/multi-agent/{agent_name}-endpoint")['Parameter']['Value']
             

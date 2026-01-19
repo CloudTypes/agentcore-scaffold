@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CDK app for AgentCore Voice Agent infrastructure."""
+"""CDK app for AgentCore Scaffold infrastructure."""
 
 import os
 from pathlib import Path
@@ -55,9 +55,9 @@ env = cdk.Environment(
 # Create base infrastructure stack (ECR, IAM, Secrets, etc.)
 base_stack = AgentCoreStack(
     app,
-    f"AgentCoreVoiceAgent-Base-{env_name}",
+    f"AgentCoreScaffold-Base-{env_name}",
     env=env,
-    description=f"AgentCore Voice Agent base infrastructure ({env_name})"
+    description=f"AgentCore Scaffold base infrastructure ({env_name})"
 )
 
 # Memory management is now handled via scripts/manage_memory.py
@@ -76,7 +76,7 @@ web_client_stack = WebClientStack(
 # Note: Runtime stack requires ECR image to be pushed first
 runtime_stack = AgentCoreRuntimeStack(
     app,
-    f"AgentCoreVoiceAgent-Runtime-{env_name}",
+    f"AgentCoreScaffold-Runtime-{env_name}",
     env=env,
     description=f"AgentCore Runtime deployment ({env_name})",
     base_stack=base_stack,

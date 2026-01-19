@@ -110,7 +110,7 @@ This document summarizes the infrastructure deployment implementation completed 
 
 ### Separate ECR Repositories
 - Each agent has its own ECR repository
-- Naming: `agentcore-voice-agent-{agent-name}`
+- Naming: `agentcore-scaffold-{agent-name}`
 - Independent versioning and lifecycle management
 
 ### Automated CI/CD

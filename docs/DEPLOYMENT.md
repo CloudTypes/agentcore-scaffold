@@ -40,7 +40,7 @@ Set environment variables for CodeBuild to connect to GitHub:
 
 ```bash
 export GITHUB_OWNER=your-github-username
-export GITHUB_REPO=agentcore-voice-agent
+export GITHUB_REPO=agentcore-scaffold
 ```
 
 These will be used when deploying the CodeBuild stack.
@@ -51,7 +51,7 @@ Deploy the base stack which creates ECR repositories, IAM roles, and secrets:
 
 ```bash
 cd infrastructure/cdk
-cdk deploy AgentCoreVoiceAgent-Base-dev --context environment=dev
+cdk deploy AgentCoreScaffold-Base-dev --context environment=dev
 ```
 
 This creates:
@@ -79,7 +79,7 @@ Populate secrets in AWS Secrets Manager:
 
 ```bash
 aws secretsmanager put-secret-value \
-  --secret-id agentcore/voice-agent/dev/google-oauth2 \
+  --secret-id agentcore/scaffold/dev/google-oauth2 \
   --secret-string '{
     "client_id": "your-client-id.apps.googleusercontent.com",
     "client_secret": "your-client-secret",
@@ -92,7 +92,7 @@ aws secretsmanager put-secret-value \
 ```bash
 JWT_SECRET=$(openssl rand -hex 32)
 aws secretsmanager put-secret-value \
-  --secret-id agentcore/voice-agent/dev/jwt-secret \
+  --secret-id agentcore/scaffold/dev/jwt-secret \
   --secret-string "{\"secret_key\": \"$JWT_SECRET\"}"
 ```
 
@@ -101,7 +101,7 @@ aws secretsmanager put-secret-value \
 ```bash
 AGENT_AUTH_SECRET=$(openssl rand -hex 32)
 aws secretsmanager put-secret-value \
-  --secret-id agentcore/voice-agent/dev/agent-auth-secret \
+  --secret-id agentcore/scaffold/dev/agent-auth-secret \
   --secret-string "{\"secret_key\": \"$AGENT_AUTH_SECRET\"}"
 ```
 
@@ -112,28 +112,28 @@ Set model configurations and other parameters:
 ```bash
 # Model IDs
 aws ssm put-parameter \
-  --name "/agentcore/voice-agent/dev/orchestrator-model" \
+  --name "/agentcore/scaffold/dev/orchestrator-model" \
   --value "us.amazon.nova-pro-v1:0" \
   --type "String"
 
 aws ssm put-parameter \
-  --name "/agentcore/voice-agent/dev/vision-model" \
+  --name "/agentcore/scaffold/dev/vision-model" \
   --value "us.amazon.nova-pro-v1:0" \
   --type "String"
 
 # Memory configuration
 aws ssm put-parameter \
-  --name "/agentcore/voice-agent/dev/memory-id" \
+  --name "/agentcore/scaffold/dev/memory-id" \
   --value "your-memory-id" \
   --type "String"
 
 aws ssm put-parameter \
-  --name "/agentcore/voice-agent/dev/memory-region" \
+  --name "/agentcore/scaffold/dev/memory-region" \
   --value "us-west-2" \
   --type "String"
 
 aws ssm put-parameter \
-  --name "/agentcore/voice-agent/dev/memory-enabled" \
+  --name "/agentcore/scaffold/dev/memory-enabled" \
   --value "true" \
   --type "String"
 ```
@@ -171,7 +171,7 @@ Deploy runtime and multi-agent stacks:
 
 ```bash
 # Deploy voice agent runtime
-cdk deploy AgentCoreVoiceAgent-Runtime-dev --context environment=dev
+cdk deploy AgentCoreScaffold-Runtime-dev --context environment=dev
 
 # Deploy multi-agent system
 cdk deploy AgentCoreMultiAgent-dev --context environment=dev
@@ -216,7 +216,7 @@ IMAGE_TAG="${BRANCH_NAME}-${COMMIT_SHA}"
 
 # Get ECR repository URI
 ECR_REPO_URI=$(aws ssm get-parameter \
-  --name "/agentcore/voice-agent/${ENVIRONMENT}/ecr-${AGENT_NAME}-uri" \
+  --name "/agentcore/scaffold/${ENVIRONMENT}/ecr-${AGENT_NAME}-uri" \
   --query 'Parameter.Value' \
   --output text)
 
@@ -232,7 +232,7 @@ docker push $ECR_REPO_URI:latest
 
 # Update SSM parameter
 aws ssm put-parameter \
-  --name "/agentcore/voice-agent/${ENVIRONMENT}/${AGENT_NAME}-image-tag" \
+  --name "/agentcore/scaffold/${ENVIRONMENT}/${AGENT_NAME}-image-tag" \
   --value "$IMAGE_TAG" \
   --type "String" \
   --overwrite
@@ -255,7 +255,7 @@ cdk deploy AgentCoreMultiAgent-dev \
    ```bash
    # List recent image tags in ECR
    aws ecr describe-images \
-     --repository-name agentcore-voice-agent-orchestrator \
+     --repository-name agentcore-scaffold-orchestrator \
      --query 'sort_by(imageDetails,&imagePushedAt)[-5:].imageTags[0]' \
      --output text
    ```
@@ -263,7 +263,7 @@ cdk deploy AgentCoreMultiAgent-dev \
 2. **Update SSM Parameter**:
    ```bash
    aws ssm put-parameter \
-     --name "/agentcore/voice-agent/dev/orchestrator-image-tag" \
+     --name "/agentcore/scaffold/dev/orchestrator-image-tag" \
      --value "main-abc1234" \
      --type "String" \
      --overwrite
@@ -312,7 +312,7 @@ View build logs in AWS Console:
 ### CloudWatch Logs
 
 Agent logs are in CloudWatch:
-- Log group: `/aws/agentcore/voice-agent`
+- Log group: `/aws/agentcore/scaffold`
 - Filter by agent name or runtime ID
 
 ### Health Checks

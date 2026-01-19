@@ -115,7 +115,7 @@ class RuntimeConfig:
         # Try Secrets Manager (for secrets like OAuth credentials)
         if self._is_agentcore_runtime:
             # Try common secret names
-            secret_name = f"agentcore/voice-agent/{key.lower().replace('_', '-')}"
+            secret_name = f"agentcore/scaffold/{key.lower().replace('_', '-')}"
             secret = self.get_secret(secret_name)
             if secret:
                 # If secret is a dict, try to get the key value
@@ -124,7 +124,7 @@ class RuntimeConfig:
                 return str(secret)
             
             # Try SSM Parameter Store
-            ssm_name = f"/agentcore/voice-agent/{key}"
+            ssm_name = f"/agentcore/scaffold/{key}"
             ssm_value = self.get_ssm_parameter(ssm_name)
             if ssm_value:
                 return ssm_value
@@ -134,7 +134,7 @@ class RuntimeConfig:
     def get_google_oauth_config(self) -> Dict[str, Optional[str]]:
         """Get Google OAuth2 configuration."""
         # Try to get from Secrets Manager first
-        oauth_secret = self.get_secret("agentcore/voice-agent/google-oauth2")
+        oauth_secret = self.get_secret("agentcore/scaffold/google-oauth2")
         if oauth_secret and isinstance(oauth_secret, dict):
             return {
                 "client_id": oauth_secret.get("client_id") or oauth_secret.get("GOOGLE_CLIENT_ID"),
@@ -154,7 +154,7 @@ class RuntimeConfig:
     def get_jwt_config(self) -> Dict[str, Optional[str]]:
         """Get JWT configuration."""
         # Try to get JWT secret from Secrets Manager
-        jwt_secret = self.get_secret("agentcore/voice-agent/jwt-secret")
+        jwt_secret = self.get_secret("agentcore/scaffold/jwt-secret")
         if jwt_secret:
             if isinstance(jwt_secret, dict):
                 secret_key = jwt_secret.get("secret_key") or jwt_secret.get("JWT_SECRET_KEY")

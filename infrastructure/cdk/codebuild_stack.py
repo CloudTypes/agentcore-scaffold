@@ -139,7 +139,7 @@ class CodeBuildStack(Stack):
                 ),
                 source=codebuild.Source.git_hub(
                     owner=os.getenv("GITHUB_OWNER", ""),
-                    repo=os.getenv("GITHUB_REPO", "agentcore-voice-agent"),
+                    repo=os.getenv("GITHUB_REPO", "agentcore-scaffold"),
                     webhook=True,
                     webhook_filters=[
                         codebuild.FilterGroup.in_event_of(
@@ -188,7 +188,7 @@ class CodeBuildStack(Stack):
                 ),
                 source=codebuild.Source.git_hub(
                     owner=os.getenv("GITHUB_OWNER", ""),
-                    repo=os.getenv("GITHUB_REPO", "agentcore-voice-agent"),
+                    repo=os.getenv("GITHUB_REPO", "agentcore-scaffold"),
                     webhook=True,
                     webhook_filters=[
                         codebuild.FilterGroup.in_event_of(

@@ -42,7 +42,7 @@ class TestHealthCheck:
         data = response.json()
         
         assert data["status"] == "healthy"
-        assert data["service"] == "agentcore-voice-agent"
+        assert data["service"] == "agentcore-scaffold"
         assert data["version"] == "1.0.0"
     
     def test_health_check_content_type(self, client):

@@ -51,8 +51,8 @@ memory_client = MemoryClient(region_name=REGION)
 # Configuration
 # Memory name must match pattern: [a-zA-Z][a-zA-Z0-9_]{0,47} (no hyphens, must start with letter)
 MEMORY_NAME = "voice_agent_memory"
-SSM_PARAM = "/agentcore/voice-agent/memory-id"
-SECRET_NAME = "agentcore/voice-agent/memory-id"
+SSM_PARAM = "/agentcore/scaffold/memory-id"
+SECRET_NAME = "agentcore/scaffold/memory-id"
 EVENT_EXPIRY_DAYS = 30
 
 

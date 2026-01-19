@@ -907,7 +907,7 @@ async def health_check():
     return JSONResponse(
         content={
             "status": "healthy",
-            "service": "agentcore-voice-agent",
+            "service": "agentcore-scaffold",
             "version": "1.0.0"
         }
     )

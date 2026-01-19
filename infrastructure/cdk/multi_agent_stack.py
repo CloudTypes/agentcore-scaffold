@@ -51,8 +51,8 @@ class MultiAgentStack(Stack):
                 ecr_repos = {
                     "orchestrator": ecr.Repository.from_repository_attributes(
                         self, "ECRRepo",
-                        repository_arn=f"arn:aws:ecr:{self.region}:{self.account}:repository/agentcore-voice-agent-orchestrator",
-                        repository_name="agentcore-voice-agent-orchestrator"
+                        repository_arn=f"arn:aws:ecr:{self.region}:{self.account}:repository/agentcore-scaffold-orchestrator",
+                        repository_name="agentcore-scaffold-orchestrator"
                     )
                 }
             else:
@@ -121,7 +121,7 @@ class MultiAgentStack(Stack):
             image_tag_param = ssm.StringParameter.from_string_parameter_name(
                 self,
                 f"{agent_name.capitalize()}ImageTagParam",
-                string_parameter_name=f"/agentcore/voice-agent/{env_name}/{agent_name}-image-tag"
+                string_parameter_name=f"/agentcore/scaffold/{env_name}/{agent_name}-image-tag"
             )
             image_tag = image_tag_param.string_value or self.node.try_get_context("image_tag") or "latest"
             
@@ -211,7 +211,7 @@ class MultiAgentStack(Stack):
         orchestrator_image_tag_param = ssm.StringParameter.from_string_parameter_name(
             self,
             "OrchestratorImageTagParam",
-            string_parameter_name=f"/agentcore/voice-agent/{env_name}/orchestrator-image-tag"
+            string_parameter_name=f"/agentcore/scaffold/{env_name}/orchestrator-image-tag"
         )
         orchestrator_image_tag = orchestrator_image_tag_param.string_value or self.node.try_get_context("image_tag") or "latest"
         

@@ -34,7 +34,7 @@ cdk synth
 
 2. Deploy base infrastructure:
 ```bash
-cdk deploy AgentCoreVoiceAgent-Base-dev
+cdk deploy AgentCoreScaffold-Base-dev
 ```
 
 3. Create memory resource with strategies (using script, not CDK):
@@ -45,7 +45,7 @@ python scripts/manage_memory.py create
 
 4. Deploy runtime (after pushing Docker image to ECR):
 ```bash
-cdk deploy AgentCoreVoiceAgent-Runtime-dev
+cdk deploy AgentCoreScaffold-Runtime-dev
 ```
 
 5. Deploy all CDK stacks at once:
@@ -61,21 +61,21 @@ cdk deploy --all --context environment=prod --context region=us-east-1
 
 5. Deploy with custom image tag:
 ```bash
-cdk deploy AgentCoreVoiceAgent-Runtime-dev --context image_tag=v1.0.0
+cdk deploy AgentCoreScaffold-Runtime-dev --context image_tag=v1.0.0
 ```
 
 ## Stack Components
 
 The infrastructure is split into two CDK stacks:
 
-### 1. Base Stack (`AgentCoreVoiceAgent-Base-{env}`)
+### 1. Base Stack (`AgentCoreScaffold-Base-{env}`)
 - **ECR Repository**: Stores Docker images for AgentCore Runtime
 - **IAM Role**: Permissions for Bedrock, Memory, Secrets Manager, CloudWatch
 - **Secrets Manager**: Secure storage for OAuth credentials, JWT secrets, and Memory ID
 - **SSM Parameters**: Non-sensitive configuration
 - **CloudWatch Log Group**: Application logging
 
-### 2. Runtime Stack (`AgentCoreVoiceAgent-Runtime-{env}`)
+### 2. Runtime Stack (`AgentCoreScaffold-Runtime-{env}`)
 - **AgentCore Runtime**: Deploys the voice agent container to AgentCore Runtime
 - **Custom Resource**: Lambda function to manage Runtime lifecycle
 - **SSM Parameters**: Stores Runtime endpoint and ID
@@ -102,8 +102,8 @@ The script creates memory with all three strategies:
 - Semantic Memory Strategy
 
 The memory ID is automatically stored in:
-- SSM Parameter: `/agentcore/voice-agent/memory-id`
-- Secrets Manager: `agentcore/voice-agent/memory-id`
+- SSM Parameter: `/agentcore/scaffold/memory-id`
+- Secrets Manager: `agentcore/scaffold/memory-id`
 
 See `scripts/manage_memory.py --help` for more details.
 
@@ -141,7 +141,7 @@ After deployment, configure secrets in AWS Secrets Manager. The Base stack creat
 
 #### 1. Google OAuth2 Credentials
 
-**Secret Name**: `agentcore/voice-agent/google-oauth2`
+**Secret Name**: `agentcore/scaffold/google-oauth2`
 
 **Secret Value Format**:
 ```json
@@ -157,7 +157,7 @@ After deployment, configure secrets in AWS Secrets Manager. The Base stack creat
 # Replace REGION with your AWS region (e.g., us-west-2)
 aws secretsmanager put-secret-value \
   --region REGION \
-  --secret-id agentcore/voice-agent/google-oauth2 \
+  --secret-id agentcore/scaffold/google-oauth2 \
   --secret-string '{
     "client_id": "your-client-id.apps.googleusercontent.com",
     "client_secret": "your-client-secret",
@@ -170,13 +170,13 @@ aws secretsmanager put-secret-value \
 # Create a file oauth2-secret.json with the secret content
 aws secretsmanager put-secret-value \
   --region REGION \
-  --secret-id agentcore/voice-agent/google-oauth2 \
+  --secret-id agentcore/scaffold/google-oauth2 \
   --secret-string file://oauth2-secret.json
 ```
 
 #### 2. JWT Secret (User Authentication)
 
-**Secret Name**: `agentcore/voice-agent/jwt-secret`
+**Secret Name**: `agentcore/scaffold/jwt-secret`
 
 **Purpose**: Secret key for signing/verifying JWT tokens for **user authentication** (OAuth2 flow).
 
@@ -195,7 +195,7 @@ JWT_SECRET=$(openssl rand -hex 32)
 # Update the secret
 aws secretsmanager put-secret-value \
   --region REGION \
-  --secret-id agentcore/voice-agent/jwt-secret \
+  --secret-id agentcore/scaffold/jwt-secret \
   --secret-string "{\"secret_key\": \"$JWT_SECRET\"}"
 ```
 
@@ -204,13 +204,13 @@ aws secretsmanager put-secret-value \
 # Create a file jwt-secret.json with: {"secret_key": "your-secret-key"}
 aws secretsmanager put-secret-value \
   --region REGION \
-  --secret-id agentcore/voice-agent/jwt-secret \
+  --secret-id agentcore/scaffold/jwt-secret \
   --secret-string file://jwt-secret.json
 ```
 
 #### 3. Agent Authentication Secret (Inter-Agent Communication)
 
-**Secret Name**: `agentcore/voice-agent/agent-auth-secret`
+**Secret Name**: `agentcore/scaffold/agent-auth-secret`
 
 **Purpose**: Secret key for signing/verifying JWT tokens for **agent-to-agent (A2A) communication**. This is used by the orchestrator and specialist agents to authenticate with each other.
 
@@ -233,7 +233,7 @@ AGENT_AUTH_SECRET=$(openssl rand -hex 32)
 # Update the secret
 aws secretsmanager put-secret-value \
   --region REGION \
-  --secret-id agentcore/voice-agent/agent-auth-secret \
+  --secret-id agentcore/scaffold/agent-auth-secret \
   --secret-string "{\"secret_key\": \"$AGENT_AUTH_SECRET\"}"
 ```
 
@@ -242,7 +242,7 @@ aws secretsmanager put-secret-value \
 # Create a file agent-auth-secret.json with: {"secret_key": "your-secret-key"}
 aws secretsmanager put-secret-value \
   --region REGION \
-  --secret-id agentcore/voice-agent/agent-auth-secret \
+  --secret-id agentcore/scaffold/agent-auth-secret \
   --secret-string file://agent-auth-secret.json
 ```
 
@@ -254,7 +254,7 @@ aws secretsmanager put-secret-value \
 
 #### 4. Memory ID
 
-**Secret Name**: `agentcore/voice-agent/memory-id`
+**Secret Name**: `agentcore/scaffold/memory-id`
 
 **Note**: This secret is automatically populated by the `manage_memory.py` script when the memory resource is created. You typically don't need to manually update this.
 
@@ -282,12 +282,12 @@ To verify that secrets are correctly configured:
 # List all secrets
 aws secretsmanager list-secrets \
   --region REGION \
-  --filters Key=name,Values=agentcore/voice-agent
+  --filters Key=name,Values=agentcore/scaffold
 
 # Get a specific secret value (decrypted)
 aws secretsmanager get-secret-value \
   --region REGION \
-  --secret-id agentcore/voice-agent/google-oauth2 \
+  --secret-id agentcore/scaffold/google-oauth2 \
   --query 'SecretString' \
   --output text | jq .
 ```
@@ -302,10 +302,10 @@ Destroy stacks in reverse order:
 python scripts/manage_memory.py delete
 
 # Destroy runtime
-cdk destroy AgentCoreVoiceAgent-Runtime-dev
+cdk destroy AgentCoreScaffold-Runtime-dev
 
 # Finally base infrastructure
-cdk destroy AgentCoreVoiceAgent-Base-dev
+cdk destroy AgentCoreScaffold-Base-dev
 
 # Or destroy all CDK stacks at once (memory must be deleted separately)
 cdk destroy --all
@@ -317,27 +317,27 @@ The CDK stacks can be integrated into CI/CD pipelines:
 
 1. **Build and Push Docker Image**:
 ```bash
-docker buildx build --platform linux/arm64 -t agentcore-voice-agent:latest .
-docker tag agentcore-voice-agent:latest <account>.dkr.ecr.<region>.amazonaws.com/agentcore-voice-agent:latest
+docker buildx build --platform linux/arm64 -t agentcore-scaffold:latest .
+docker tag agentcore-scaffold:latest <account>.dkr.ecr.<region>.amazonaws.com/agentcore-scaffold:latest
 aws ecr get-login-password --region <region> | docker login --username AWS --password-stdin <account>.dkr.ecr.<region>.amazonaws.com
-docker push <account>.dkr.ecr.<region>.amazonaws.com/agentcore-voice-agent:latest
+docker push <account>.dkr.ecr.<region>.amazonaws.com/agentcore-scaffold:latest
 ```
 
 2. **Deploy Infrastructure**:
 ```bash
 # Deploy base stack
-cdk deploy AgentCoreVoiceAgent-Base-prod
+cdk deploy AgentCoreScaffold-Base-prod
 
 # Create memory resource with strategies (using script, not CDK)
 python scripts/manage_memory.py create
 
 # Deploy runtime stack (with image tag)
-cdk deploy AgentCoreVoiceAgent-Runtime-prod --context image_tag=latest
+cdk deploy AgentCoreScaffold-Runtime-prod --context image_tag=latest
 ```
 
 3. **Update Runtime** (for new image versions):
 ```bash
-cdk deploy AgentCoreVoiceAgent-Runtime-prod --context image_tag=v1.1.0
+cdk deploy AgentCoreScaffold-Runtime-prod --context image_tag=v1.1.0
 ```
 
 ## Stack Dependencies

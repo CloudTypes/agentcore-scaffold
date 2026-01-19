@@ -26,7 +26,7 @@ Add the template repository as a remote named `template`:
 
 ```bash
 # From your customer repository root
-git remote add template https://github.com/your-org/agentcore-voice-agent.git
+git remote add template https://github.com/your-org/agentcore-scaffold.git
 
 # Verify it was added
 git remote -v
@@ -36,8 +36,8 @@ You should see:
 ```
 origin    https://github.com/customer-org/customer-voice-agent.git (fetch)
 origin    https://github.com/customer-org/customer-voice-agent.git (push)
-template  https://github.com/your-org/agentcore-voice-agent.git (fetch)
-template  https://github.com/your-org/agentcore-voice-agent.git (push)
+template  https://github.com/your-org/agentcore-scaffold.git (fetch)
+template  https://github.com/your-org/agentcore-scaffold.git (push)
 ```
 
 ### 2. Fetch Template Updates

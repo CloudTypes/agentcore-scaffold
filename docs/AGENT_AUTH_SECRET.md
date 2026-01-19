@@ -52,7 +52,7 @@ AGENT_AUTH_SECRET=a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z6a7b8c9d0e1
 
 ### Production (AWS Secrets Manager)
 
-**Secret Name**: `agentcore/voice-agent/agent-auth-secret`
+**Secret Name**: `agentcore/scaffold/agent-auth-secret`
 
 **Secret Value Format**:
 ```json
@@ -69,7 +69,7 @@ AGENT_AUTH_SECRET=$(openssl rand -hex 32)
 # Update the secret (replace REGION with your AWS region, e.g., us-west-2)
 aws secretsmanager put-secret-value \
   --region us-west-2 \
-  --secret-id agentcore/voice-agent/agent-auth-secret \
+  --secret-id agentcore/scaffold/agent-auth-secret \
   --secret-string "{\"secret_key\": \"$AGENT_AUTH_SECRET\"}"
 ```
 
@@ -80,7 +80,7 @@ aws secretsmanager put-secret-value \
 
 aws secretsmanager put-secret-value \
   --region us-west-2 \
-  --secret-id agentcore/voice-agent/agent-auth-secret \
+  --secret-id agentcore/scaffold/agent-auth-secret \
   --secret-string file://agent-auth-secret.json
 ```
 
@@ -117,12 +117,12 @@ To verify the secret is correctly configured:
 # Check if secret exists in Secrets Manager
 aws secretsmanager describe-secret \
   --region us-west-2 \
-  --secret-id agentcore/voice-agent/agent-auth-secret
+  --secret-id agentcore/scaffold/agent-auth-secret
 
 # Get the secret value (decrypted)
 aws secretsmanager get-secret-value \
   --region us-west-2 \
-  --secret-id agentcore/voice-agent/agent-auth-secret \
+  --secret-id agentcore/scaffold/agent-auth-secret \
   --query 'SecretString' \
   --output text | jq .
 ```

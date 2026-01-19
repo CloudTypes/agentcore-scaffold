@@ -1,4 +1,4 @@
-# AgentCore Voice Agent - Multi-Agent System
+# AgentCore Scaffold - Multi-Agent System
 
 A production-ready multi-agent system with bi-directional voice streaming, text-based agent orchestration, and AgentCore Memory integration. Built with AWS Bedrock AgentCore Runtime, Strands framework, and Amazon Nova models.
 
@@ -18,9 +18,9 @@ A production-ready multi-agent system with bi-directional voice streaming, text-
 
 ## Project Overview
 
-### What is AgentCore Voice Agent?
+### What is AgentCore Scaffold?
 
-AgentCore Voice Agent is a comprehensive multi-agent system that provides:
+AgentCore Scaffold is a comprehensive multi-agent system that provides:
 
 - **Bi-directional Voice Streaming**: Real-time voice conversations using Amazon Nova Sonic
 - **Multi-Agent Orchestration**: Intelligent routing to specialist agents (vision, document, data, tool)
@@ -421,7 +421,7 @@ BEDROCK_MAX_TOKENS=4096
 1. **Clone the repository**:
    ```bash
    git clone <repository-url>
-   cd agentcore-voice-agent
+   cd agentcore-scaffold
    ```
 
 2. **Create `.env` file** (see above)
@@ -871,7 +871,7 @@ The system uses three AgentCore Memory strategies:
 ### Project Structure
 
 ```
-agentcore-voice-agent/
+agentcore-scaffold/
 ├── agents/                    # Multi-agent system
 │   ├── orchestrator/          # Orchestrator agent
 │   │   ├── app.py            # FastAPI + A2A server
@@ -1132,12 +1132,12 @@ See [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) for complete initial setup instru
 
 Each agent has its own ECR repository for independent versioning:
 
-- `agentcore-voice-agent-orchestrator`
-- `agentcore-voice-agent-vision`
-- `agentcore-voice-agent-document`
-- `agentcore-voice-agent-data`
-- `agentcore-voice-agent-tool`
-- `agentcore-voice-agent-voice`
+- `agentcore-scaffold-orchestrator`
+- `agentcore-scaffold-vision`
+- `agentcore-scaffold-document`
+- `agentcore-scaffold-data`
+- `agentcore-scaffold-tool`
+- `agentcore-scaffold-voice`
 
 #### CodeBuild Pipelines
 
@@ -1169,7 +1169,7 @@ If automated deployment is not available, see [docs/DEPLOYMENT.md](./docs/DEPLOY
 
 ### Monitoring
 
-- **CloudWatch Logs**: Application logs for each agent (`/aws/agentcore/voice-agent`)
+- **CloudWatch Logs**: Application logs for each agent (`/aws/agentcore/scaffold`)
 - **CloudWatch Metrics**: Build success rates, deployment duration
 - **CodeBuild Logs**: Detailed build and deployment logs
 - **SNS Notifications**: Deployment success/failure notifications
@@ -1485,7 +1485,7 @@ The A2A protocol uses JSON-RPC 2.0 over HTTP:
 1. **SSM Parameter Missing**: Create parameter:
    ```bash
    aws ssm put-parameter \
-     --name "/agentcore/voice-agent/{env}/parameter-name" \
+     --name "/agentcore/scaffold/{env}/parameter-name" \
      --value "value" \
      --type "String"
    ```
@@ -1523,12 +1523,12 @@ The A2A protocol uses JSON-RPC 2.0 over HTTP:
 **Solutions**:
 1. Verify Google OAuth2 credentials:
    - **Local**: Check `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.env`
-   - **Production**: Verify secret in Secrets Manager: `agentcore/voice-agent/{env}/google-oauth2`
+   - **Production**: Verify secret in Secrets Manager: `agentcore/scaffold/{env}/google-oauth2`
    - Verify redirect URI matches Google Cloud Console
 
 2. Check JWT secret:
    - **Local**: `echo $JWT_SECRET_KEY`
-   - **Production**: Verify secret in Secrets Manager: `agentcore/voice-agent/{env}/jwt-secret`
+   - **Production**: Verify secret in Secrets Manager: `agentcore/scaffold/{env}/jwt-secret`
 
 3. Verify token expiration:
    - Default: 60 minutes

@@ -156,7 +156,7 @@ JWT_EXPIRATION_MINUTES=60
 
 Store credentials in AWS Secrets Manager:
 
-1. **Google OAuth2 Credentials** (`agentcore/voice-agent/google-oauth2`):
+1. **Google OAuth2 Credentials** (`agentcore/scaffold/google-oauth2`):
 ```json
 {
   "client_id": "your-client-id.apps.googleusercontent.com",
@@ -166,7 +166,7 @@ Store credentials in AWS Secrets Manager:
 }
 ```
 
-2. **JWT Secret** (`agentcore/voice-agent/jwt-secret`):
+2. **JWT Secret** (`agentcore/scaffold/jwt-secret`):
 ```json
 {
   "secret_key": "your-generated-secret-key-from-step-6"
@@ -177,12 +177,12 @@ Store credentials in AWS Secrets Manager:
 ```bash
 # Store Google OAuth2 credentials
 aws secretsmanager put-secret-value \
-  --secret-id agentcore/voice-agent/google-oauth2 \
+  --secret-id agentcore/scaffold/google-oauth2 \
   --secret-string '{"client_id":"your-client-id","client_secret":"your-secret","redirect_uri":"https://endpoint/api/auth/callback"}'
 
 # Store JWT secret
 aws secretsmanager put-secret-value \
-  --secret-id agentcore/voice-agent/jwt-secret \
+  --secret-id agentcore/scaffold/jwt-secret \
   --secret-string '{"secret_key":"your-jwt-secret-key"}'
 ```
 
@@ -198,7 +198,7 @@ When deploying to AgentCore Runtime:
    - Add the production JavaScript origin: `https://<your-agentcore-endpoint>`
    - Click **Save**
 3. **Update Secrets Manager** (if using):
-   - Update the `redirect_uri` in the `agentcore/voice-agent/google-oauth2` secret
+   - Update the `redirect_uri` in the `agentcore/scaffold/google-oauth2` secret
 
 ## Step 9: Verify Configuration
 

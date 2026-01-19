@@ -24,7 +24,7 @@ phases:
       - docker push $ECR_REPO_URI:latest
       - echo Updating SSM parameter with new image tag...
       - aws ssm put-parameter \
-          --name "/agentcore/voice-agent/${ENVIRONMENT}/voice-image-tag" \
+          --name "/agentcore/scaffold/${ENVIRONMENT}/voice-image-tag" \
           --value "$IMAGE_TAG" \
           --type "String" \
           --overwrite \
@@ -44,7 +44,7 @@ phases:
       - echo Updating AgentCore Runtime if needed...
       - |
         RUNTIME_ID=$(aws ssm get-parameter \
-          --name "/agentcore/voice-agent/runtime-id" \
+          --name "/agentcore/scaffold/runtime-id" \
           --region $AWS_REGION \
           --query 'Parameter.Value' \
           --output text 2>/dev/null || echo "")
