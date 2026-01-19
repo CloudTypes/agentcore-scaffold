@@ -110,12 +110,12 @@ class ServiceDiscovery:
         """
         if agent_name not in AGENT_NAMES:
             available = ", ".join(AGENT_NAMES)
-            raise ValueError(f"Unknown agent name: '{agent_name}'. " f"Available agents: {available}")
+            raise ValueError(f"Unknown agent name: '{agent_name}'. Available agents: {available}")
 
         endpoint = self._endpoints.get(agent_name)
         if not endpoint:
             available = ", ".join(self._endpoints.keys())
-            raise ValueError(f"No endpoint found for agent: '{agent_name}'. " f"Available agents: {available}")
+            raise ValueError(f"No endpoint found for agent: '{agent_name}'. Available agents: {available}")
 
         return endpoint
 
